@@ -4,6 +4,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from app.config import get_settings
 from app.db.neo4j_client import close_driver, verify_connectivity
 
 
@@ -18,7 +19,7 @@ def create_app() -> FastAPI:
 
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=["*"],
+        allow_origins=get_settings().cors_origin_list,
         allow_methods=["*"],
         allow_headers=["*"],
     )

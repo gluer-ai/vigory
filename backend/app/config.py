@@ -19,7 +19,17 @@ class Settings(BaseSettings):
 
     backend_port: int = 8000
 
+    # Comma-separated allowed origins for CORS, e.g. "https://app.example.com".
+    # Defaults to "*" for local dev; set explicitly in production.
+    cors_allowed_origins: str = "*"
+
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
+
+    @property
+    def cors_origin_list(self) -> list[str]:
+        if self.cors_allowed_origins.strip() == "*":
+            return ["*"]
+        return [o.strip() for o in self.cors_allowed_origins.split(",") if o.strip()]
 
 
 @lru_cache

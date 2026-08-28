@@ -94,3 +94,10 @@ cd backend && ./venv/bin/pytest -q                    # unit + integration tests
 
 Manual: `curl` the endpoints above, or open the frontend, type a trigger
 `entity_id`, and confirm the scoped subgraph renders on the canvas.
+
+## Deploying
+
+See [`DEPLOYMENT.md`](./DEPLOYMENT.md) for the full Railway deployment guide
+(3 services: neo4j, backend, frontend), including the `.railway/railway.ts`
+infrastructure-as-code definition, Dockerfiles, and the exact command
+sequence to provision, seed, and go live.
