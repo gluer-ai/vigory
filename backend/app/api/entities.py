@@ -3,11 +3,16 @@ import json
 from fastapi import APIRouter, HTTPException, Query
 
 from app.db.neo4j_client import get_driver
+from app.feeds.bbox import in_bbox
 from app.models.entity import Entity, EntityCreate, EntityUpdate
 from app.ontology.validate import ValidationError, validate_entity
 from app.services.search import search_entities_by_name
 
 router = APIRouter(prefix="/entities", tags=["entities"])
+
+# Cap on rows scanned in Python when a bbox filter is applied (see
+# list_entities). Keeps a single request bounded regardless of graph size.
+_BBOX_SCAN_LIMIT = 5000
 
 
 def _to_props(data: dict) -> dict:
@@ -51,25 +56,70 @@ async def list_entities(
     limit: int = Query(50, ge=1, le=200),
     offset: int = Query(0, ge=0),
     entity_class: str | None = Query(None),
+    bbox: str | None = Query(
+        None, description="latmin,latmax,lonmin,lonmax — keeps entities whose attrs.lat/attrs.lon fall inside"
+    ),
 ):
     """Browse-all listing, stable order by entity_id, with optional
-    root-class filter and simple offset pagination."""
+    root-class filter, bbox filter, and simple offset pagination."""
+    parsed_bbox = _parse_bbox(bbox)
     driver = get_driver()
     async with driver.session() as session:
+        if parsed_bbox is None:
+            result = await session.run(
+                """
+                MATCH (e:Entity)
+                WHERE $entity_class IS NULL OR e.entity_class = $entity_class
+                RETURN e
+                ORDER BY e.entity_id
+                SKIP $offset
+                LIMIT $limit
+                """,
+                entity_class=entity_class,
+                offset=offset,
+                limit=limit,
+            )
+            return [_row_to_entity(dict(record["e"])) async for record in result]
+
+        # simplification: lat/lon live inside the JSON-encoded attrs blob, not
+        # as indexed top-level properties, so Cypher can't filter on them
+        # directly. Scan up to _BBOX_SCAN_LIMIT candidates (already narrowed
+        # by entity_class) and filter/paginate in Python. Upgrade path: store
+        # lat/lon as top-level float properties on Entity if this needs to
+        # scale past a few thousand geo-tagged entities.
         result = await session.run(
             """
             MATCH (e:Entity)
             WHERE $entity_class IS NULL OR e.entity_class = $entity_class
             RETURN e
             ORDER BY e.entity_id
-            SKIP $offset
-            LIMIT $limit
+            LIMIT $scan_limit
             """,
             entity_class=entity_class,
-            offset=offset,
-            limit=limit,
+            scan_limit=_BBOX_SCAN_LIMIT,
         )
-        return [_row_to_entity(dict(record["e"])) async for record in result]
+        entities = [_row_to_entity(dict(record["e"])) async for record in result]
+        matches = [
+            e
+            for e in entities
+            if isinstance(e.attrs.get("lat"), (int, float))
+            and isinstance(e.attrs.get("lon"), (int, float))
+            and in_bbox(e.attrs["lat"], e.attrs["lon"], parsed_bbox)
+        ]
+        return matches[offset : offset + limit]
+
+
+def _parse_bbox(raw: str | None) -> tuple[float, float, float, float] | None:
+    if not raw:
+        return None
+    parts = raw.split(",")
+    if len(parts) != 4:
+        raise HTTPException(status_code=422, detail="bbox must be 'latmin,latmax,lonmin,lonmax'")
+    try:
+        lat_min, lat_max, lon_min, lon_max = (float(p) for p in parts)
+    except ValueError:
+        raise HTTPException(status_code=422, detail="bbox must be 'latmin,latmax,lonmin,lonmax'")
+    return (lat_min, lat_max, lon_min, lon_max)
 
 
 @router.get("/search", response_model=list[Entity])

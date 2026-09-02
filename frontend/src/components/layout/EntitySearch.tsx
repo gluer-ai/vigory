@@ -92,7 +92,7 @@ export function EntitySearch({ onSelect }: EntitySearchProps) {
           )}
           {!loading &&
             results.map((entity) => {
-              const { icon: Icon, colorVar } = classMeta(entity.entity_class)
+              const { icon: Icon, colorVar } = classMeta(entity.entity_class, entity.entity_subclass)
               return (
                 <li key={entity.entity_id} role="option" aria-selected={false}>
                   <button

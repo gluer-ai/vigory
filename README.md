@@ -37,6 +37,15 @@ See `.env.example`. Key ones:
 - `LLM_PROVIDER` (`openai` | `anthropic`), `LLM_MODEL` (e.g. `gpt-4o`,
   `claude-sonnet-...`)
 - `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`
+- `TRAFIKVERKET_API_KEY` (free key from Trafikverket/Trafiklab — required for
+  the `situations`/`cameras` feeds), `FEEDS_ENABLED`
+- `OPENSKY_CLIENT_ID`/`OPENSKY_CLIENT_SECRET` (optional — the `aircraft`
+  feed works anonymously without them, at a lower rate limit),
+  `OPENSKY_BBOX`
+- `AISSTREAM_API_KEY` (free key from aisstream.io — required for the
+  `vessels` feed), `AISSTREAM_BBOX`, `AISSTREAM_LISTEN_SECONDS`
+- `GDELT_QUERY`, `GDELT_MAXRECORDS` (the `news` feed is free/keyless)
+- none needed for `radio_news` (Sveriges Radio's open API is free/keyless)
 - `VITE_API_BASE_URL` (frontend → backend)
 
 ## Architecture
@@ -48,7 +57,9 @@ backend/app/
   db/neo4j_client.py          async driver singleton
   models/                     Pydantic: Entity, Link, ClassDef, LinkDef
   ontology/validate.py        domain/range + vocab + subclass checks (reads Neo4j, not enums)
-  api/                        entities, links, schema, scenarios, ingest routers
+  api/                        entities, links, schema, scenarios, ingest, feeds routers
+  feeds/                       live-feed pollers (Trafikverket, USGS, OpenSky,
+                               aisstream.io, GDELT, Sveriges Radio): fetch -> map -> MERGE
   services/scoping.py         deterministic N-hop Cypher traversal (source of truth for scope)
   services/extraction_agent.py  text -> LLM JSON extraction -> validated "proposed" batch
   services/scenario_agent.py  ranks/annotates an already-scoped subgraph, never adds nodes
@@ -76,10 +87,29 @@ annotate or drop candidates, never add new ones.
 (validated against the ontology, never auto-merged). `POST
 /ingest/{batch_id}/commit` applies it explicitly.
 
+### Live feeds are trusted, structured writes
+Unlike `/ingest`, `POST /feeds/{name}/poll` MERGEs already-structured,
+authoritative feed data straight into committed graph state by a stable
+source id — no LLM, no proposed-batch step. No scheduler yet: poll on
+demand (a click, a cron, or a future scheduler). `GET /feeds/status` shows
+the last poll's counts per feed. Feeds (`name` in `POST /feeds/{name}/poll`):
+- `situations` / `cameras` — Trafikverket Open API, Sweden traffic
+  incidents/cameras (`TRAFIKVERKET_API_KEY` required)
+- `earthquakes` — USGS GeoJSON summary feed, global M2.5+ quakes past day
+  (no key)
+- `aircraft` — OpenSky Network `states/all`, live aircraft positions,
+  bbox-filtered (no key required; optional OAuth2 for higher limits)
+- `vessels` — aisstream.io WebSocket, live AIS vessel positions, one
+  bounded listen window per poll (`AISSTREAM_API_KEY` required)
+- `news` — GDELT DOC 2.0 API, news articles matching `GDELT_QUERY` (no key)
+- `radio_news` — Sveriges Radio open API, latest Ekot/regional news
+  broadcast episodes (no key)
+
 ## API surface
 `POST/GET/PATCH /entities`, `POST/GET /links`, `GET/POST /schema/classes`,
 `GET/POST /schema/links`, `GET /scenarios/{id}/scope`, `POST
-/scenarios/{id}/explain`, `POST /ingest`, `POST /ingest/{batch_id}/commit`.
+/scenarios/{id}/explain`, `POST /ingest`, `POST /ingest/{batch_id}/commit`,
+`GET /feeds/status`, `POST /feeds/{name}/poll`.
 Full interactive docs at `http://localhost:8000/docs` once the backend is
 running.
 

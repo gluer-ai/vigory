@@ -94,7 +94,7 @@ function EntitiesTab({ onSelectEntity }: { onSelectEntity: (id: string) => void 
         </thead>
         <tbody>
           {entities.map((e) => {
-            const { icon: Icon, colorVar } = classMeta(e.entity_class)
+            const { icon: Icon, colorVar } = classMeta(e.entity_class, e.entity_subclass)
             return (
               <tr key={e.entity_id} className="border-b border-[var(--color-border)]">
                 <td className="py-2 pe-3">

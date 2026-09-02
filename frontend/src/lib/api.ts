@@ -4,6 +4,8 @@ import type {
   Entity,
   EntityCreateInput,
   ExplainResponse,
+  FeedPollResult,
+  FeedStatus,
   IngestBatch,
   Link,
   LinkCreateInput,
@@ -40,12 +42,13 @@ export const api = {
   getEntity: (id: string) => request<Entity>(`/entities/${encodeURIComponent(id)}`),
   searchEntities: (q: string) =>
     request<Entity[]>(`/entities/search?q=${encodeURIComponent(q)}`),
-  listEntities: (opts: { limit: number; offset: number; entityClass?: string }) => {
+  listEntities: (opts: { limit: number; offset: number; entityClass?: string; bbox?: string }) => {
     const params = new URLSearchParams({
       limit: String(opts.limit),
       offset: String(opts.offset),
     })
     if (opts.entityClass) params.set('entity_class', opts.entityClass)
+    if (opts.bbox) params.set('bbox', opts.bbox)
     return request<Entity[]>(`/entities?${params}`)
   },
   listLinks: (opts: { limit: number; offset: number; linkType?: string }) => {
@@ -74,6 +77,13 @@ export const api = {
     request<Entity>('/entities', { method: 'POST', body: JSON.stringify(entity) }),
   createLink: (link: LinkCreateInput) =>
     request<Link>('/links', { method: 'POST', body: JSON.stringify(link) }),
+  getFeedsStatus: () => request<Record<string, FeedStatus>>('/feeds/status'),
+  pollFeed: (name: string) => request<FeedPollResult>(`/feeds/${encodeURIComponent(name)}/poll`, { method: 'POST' }),
+  setFeedSchedule: (name: string, intervalSeconds: number | null) =>
+    request<{ feed: string; schedule_interval_seconds: number | null }>(
+      `/feeds/${encodeURIComponent(name)}/schedule`,
+      { method: 'PUT', body: JSON.stringify({ interval_seconds: intervalSeconds }) },
+    ),
 }
 
 export { ApiError }

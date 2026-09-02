@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useState } from 'react'
 import { BrowsePage } from './components/browse/BrowsePage'
+import { FeedsPage } from './components/feeds/FeedsPage'
 import { Canvas } from './components/graph/Canvas'
+import { MapPage } from './components/map/MapPage'
 import { ScopeListView } from './components/graph/ScopeListView'
 import { AppShell } from './components/layout/AppShell'
 import { EmptyState, ErrorState, LoadingState } from './components/layout/CanvasStates'
@@ -13,7 +15,7 @@ import { api, ApiError } from './lib/api'
 import type { Entity, RelevanceAnnotation, ScopeResponse } from './lib/types'
 
 function App() {
-  const [page, setPage] = useState<'scope' | 'browse'>('scope')
+  const [page, setPage] = useState<'scope' | 'browse' | 'map' | 'feeds'>('scope')
   const [triggerEntityId, setTriggerEntityId] = useState('')
   const [hops, setHops] = useState(2)
   const [linkTypeFilter, setLinkTypeFilter] = useState<string[]>([])
@@ -68,6 +70,11 @@ function App() {
   )
 
   function handleBrowseSelectEntity(entityId: string) {
+    setPage('scope')
+    handleSelectEntity(entityId)
+  }
+
+  function handleMapSelectEntity(entityId: string) {
     setPage('scope')
     handleSelectEntity(entityId)
   }
@@ -148,7 +155,17 @@ function App() {
             hasScope={status === 'ready'}
           />
         }
-        canvas={page === 'browse' ? <BrowsePage onSelectEntity={handleBrowseSelectEntity} /> : canvasContent}
+        canvas={
+          page === 'browse' ? (
+            <BrowsePage onSelectEntity={handleBrowseSelectEntity} />
+          ) : page === 'map' ? (
+            <MapPage onSelectEntity={handleMapSelectEntity} />
+          ) : page === 'feeds' ? (
+            <FeedsPage />
+          ) : (
+            canvasContent
+          )
+        }
         drawer={
           <Drawer
             open={selectedEntity !== null}

@@ -4,7 +4,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
-EntityStatus = Literal["active", "inactive", "destroyed", "unknown"]
+EntityStatus = Literal["active", "inactive", "destroyed", "unknown", "historical"]
 
 
 class EntityBase(BaseModel):

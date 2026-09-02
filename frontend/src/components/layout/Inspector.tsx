@@ -10,7 +10,7 @@ export function Inspector({
   entity: Entity
   annotation?: RelevanceAnnotation
 }) {
-  const { icon: Icon, colorVar } = classMeta(entity.entity_class)
+  const { icon: Icon, colorVar } = classMeta(entity.entity_class, entity.entity_subclass)
   return (
     <div className="flex flex-col gap-4 text-sm">
       <div className="flex items-center gap-2">

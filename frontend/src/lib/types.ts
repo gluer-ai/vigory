@@ -111,3 +111,19 @@ export interface LinkCreateInput {
   source_ref: string
   attrs: Record<string, unknown>
 }
+
+export interface FeedPollResult {
+  feed: string
+  fetched?: number
+  written?: number
+  polled_at?: string
+  error?: string | null
+}
+
+export interface FeedStatus {
+  fetched?: number
+  written?: number
+  polled_at?: string
+  error?: string | null
+  schedule_interval_seconds: number | null
+}

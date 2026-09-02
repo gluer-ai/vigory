@@ -1,4 +1,4 @@
-import { LayoutGrid, PlusCircle, Sparkles, Waypoints } from 'lucide-react'
+import { LayoutGrid, MapIcon, PlusCircle, RadioTower, Sparkles, Waypoints } from 'lucide-react'
 import { useEffect, useState } from 'react'
 import { api } from '../../lib/api'
 import type { LinkDef } from '../../lib/types'
@@ -8,8 +8,8 @@ import { Stepper } from '../ui/Stepper'
 import { EntitySearch } from './EntitySearch'
 
 interface LeftRailProps {
-  page: 'scope' | 'browse'
-  onPageChange: (page: 'scope' | 'browse') => void
+  page: 'scope' | 'browse' | 'map' | 'feeds'
+  onPageChange: (page: 'scope' | 'browse' | 'map' | 'feeds') => void
   triggerEntityId: string
   onTriggerChange: (id: string) => void
   hops: number
@@ -64,33 +64,30 @@ export function LeftRail({
         <p className="mt-0.5 text-xs text-[var(--color-text-muted)]">Scenario scoping</p>
       </div>
 
-      <div className="flex rounded-md border border-[var(--color-border)] p-1" role="tablist">
-        <button
-          type="button"
-          role="tab"
-          aria-selected={page === 'scope'}
-          onClick={() => onPageChange('scope')}
-          className={`flex flex-1 items-center justify-center gap-1.5 rounded px-2 py-1.5 text-sm font-medium transition-colors duration-[var(--duration-fast)] ${
-            page === 'scope'
-              ? 'bg-[var(--color-surface-hover)] text-[var(--color-text-primary)]'
-              : 'text-[var(--color-text-muted)]'
-          }`}
-        >
-          <Waypoints size={14} /> Scope
-        </button>
-        <button
-          type="button"
-          role="tab"
-          aria-selected={page === 'browse'}
-          onClick={() => onPageChange('browse')}
-          className={`flex flex-1 items-center justify-center gap-1.5 rounded px-2 py-1.5 text-sm font-medium transition-colors duration-[var(--duration-fast)] ${
-            page === 'browse'
-              ? 'bg-[var(--color-surface-hover)] text-[var(--color-text-primary)]'
-              : 'text-[var(--color-text-muted)]'
-          }`}
-        >
-          <LayoutGrid size={14} /> Browse all
-        </button>
+      <div className="grid grid-cols-2 gap-1 rounded-md border border-[var(--color-border)] p-1" role="tablist">
+        {(
+          [
+            ['scope', Waypoints, 'Scope'],
+            ['browse', LayoutGrid, 'Browse all'],
+            ['map', MapIcon, 'Map'],
+            ['feeds', RadioTower, 'Feeds'],
+          ] as const
+        ).map(([id, Icon, label]) => (
+          <button
+            key={id}
+            type="button"
+            role="tab"
+            aria-selected={page === id}
+            onClick={() => onPageChange(id)}
+            className={`flex items-center justify-center gap-1.5 rounded px-2 py-1.5 text-sm font-medium transition-colors duration-[var(--duration-fast)] ${
+              page === id
+                ? 'bg-[var(--color-surface-hover)] text-[var(--color-text-primary)]'
+                : 'text-[var(--color-text-muted)]'
+            }`}
+          >
+            <Icon size={14} /> {label}
+          </button>
+        ))}
       </div>
 
       <div className="flex flex-col gap-2 rounded-md border border-[var(--color-border)] p-3">

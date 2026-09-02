@@ -5,6 +5,7 @@ import { ConfidenceChip } from '../ui/Chip'
 export interface EntityNodeData {
   label: string
   entity_class: string
+  entity_subclass?: string
   entity_id: string
   confidence: string
   proposed?: boolean
@@ -14,7 +15,7 @@ export interface EntityNodeData {
 }
 
 export function EntityNode({ data, selected }: NodeProps & { data: EntityNodeData }) {
-  const { icon: Icon, colorVar } = classMeta(data.entity_class)
+  const { icon: Icon, colorVar } = classMeta(data.entity_class, data.entity_subclass)
   const color = `var(${colorVar})`
 
   return (

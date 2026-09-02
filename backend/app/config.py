@@ -23,6 +23,25 @@ class Settings(BaseSettings):
     # Defaults to "*" for local dev; set explicitly in production.
     cors_allowed_origins: str = "*"
 
+    # Trafikverket Open API (Sweden traffic incidents/cameras feed).
+    trafikverket_api_key: str = ""
+    feeds_enabled: bool = True
+
+    # OpenSky Network (aircraft states). Anonymous mode works with no keys;
+    # client id/secret enable OAuth2 for higher rate limits.
+    opensky_client_id: str = ""
+    opensky_client_secret: str = ""
+    opensky_bbox: str = ""  # "latmin,latmax,lonmin,lonmax"; empty -> SWEDEN_BBOX
+
+    # aisstream.io (vessel AIS positions over WebSocket). Requires a free API key.
+    aisstream_api_key: str = ""
+    aisstream_bbox: str = ""  # "latmin,latmax,lonmin,lonmax"; empty -> SWEDEN_BBOX
+    aisstream_listen_seconds: int = 8
+
+    # GDELT DOC 2.0 API (news articles). Free, keyless, throttled to ~1 req/5s.
+    gdelt_query: str = "military OR conflict OR security"
+    gdelt_maxrecords: int = 50
+
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
     @property
