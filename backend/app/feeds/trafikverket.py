@@ -71,7 +71,15 @@ async def _fetch_objects(
     client = client or httpx.AsyncClient(timeout=15)
     try:
         resp = await client.post(TRAFIKVERKET_URL, content=xml, headers={"Content-Type": "text/xml"})
-        resp.raise_for_status()
+        if resp.is_error:
+            # Trafikverket puts the actual reason (bad schemaversion, unknown
+            # field, ...) in the body; raise_for_status()'s message alone
+            # discards it, which makes failures here unnecessarily opaque.
+            raise httpx.HTTPStatusError(
+                f"{resp.status_code} from Trafikverket for {objecttype}: {resp.text}",
+                request=resp.request,
+                response=resp,
+            )
         data = resp.json()
     finally:
         if owns_client:
