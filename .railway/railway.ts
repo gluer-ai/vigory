@@ -54,6 +54,14 @@ export default defineRailway(() => {
       // Set to the frontend's public URL once it has one (see DEPLOYMENT.md)
       // — defaults to "*" (open) only until you set this.
       CORS_ALLOWED_ORIGINS: preserve(),
+      // Live feed keys — all optional. An unset key just disables that one
+      // feed's POST /feeds/{name}/poll (503) and its scheduler entry; every
+      // other feed keeps working. See DEPLOYMENT.md's feed table for which
+      // feed needs which key.
+      TRAFIKVERKET_API_KEY: preserve(),
+      OPENSKY_CLIENT_ID: preserve(),
+      OPENSKY_CLIENT_SECRET: preserve(),
+      AISSTREAM_API_KEY: preserve(),
     },
   });
 

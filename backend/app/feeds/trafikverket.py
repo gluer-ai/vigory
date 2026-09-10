@@ -141,7 +141,7 @@ def _cameras_to_entities(cameras: list[dict]) -> list[EntityCreate]:
             continue
         # Known Trafikverket URL convention when PhotoUrl isn't included.
         photo_url = camera.get("PhotoUrl") or (
-            f"https://api.trafikinfo.trafikverket.se/v1/Images/RoadConditionCamera_{camera_id}.Jpeg?type=fullsize"
+            f"https://api.trafikinfo.trafikverket.se/v2/Images/RoadConditionCamera_{camera_id}.Jpeg?type=fullsize"
         )
         entities.append(
             EntityCreate(
