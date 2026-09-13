@@ -1,12 +1,9 @@
-import L from 'leaflet'
-import 'leaflet/dist/leaflet.css'
+import * as Cesium from 'cesium'
+import 'cesium/Build/Cesium/Widgets/widgets.css'
 import { useEffect, useRef } from 'react'
 import { classMeta } from '../../lib/entityClass'
 import { bboxAroundPoint, CLICK_RADIUS_LAT } from '../../lib/mapGeo'
 import type { Entity } from '../../lib/types'
-
-const SWEDEN_CENTER: [lat: number, lon: number] = [62.5, 16.5]
-const SWEDEN_BOUNDS = new L.LatLngBounds([53.5, 3.0], [71.5, 32.0])
 
 export interface MapPoint {
   entity: Entity
@@ -20,15 +17,23 @@ interface InteractiveMapProps {
   onMarkerClick: (entityId: string) => void
 }
 
-/** Real pannable/zoomable OSM map (Leaflet, keyless tiles) — the click-to-
- * search counterpart to the old static region polygons. Plots every
- * geo-tagged entity as a dot; clicking empty map area searches a bbox
- * around that point, clicking a dot jumps straight to that entity. */
+/** Reads a CSS custom property's current value (a hex/rgb string) off the
+ * document root — the same design tokens the rest of the app uses — since
+ * Cesium renders to a WebGL canvas and can't consume `var(...)` directly. */
+function cssColor(varName: string, fallback: string): string {
+  const value = getComputedStyle(document.documentElement).getPropertyValue(varName).trim()
+  return value || fallback
+}
+
+/** Real pannable/zoomable 3D globe (CesiumJS, keyless OSM imagery) — the
+ * click-to-search counterpart to the old static region polygons. Plots
+ * every geo-tagged entity as a point; clicking empty globe searches a bbox
+ * around that point, clicking a point jumps straight to that entity. */
 export function InteractiveMap({ points, onAreaClick, onMarkerClick }: InteractiveMapProps) {
   const containerRef = useRef<HTMLDivElement>(null)
-  const mapRef = useRef<L.Map | null>(null)
-  const markerLayerRef = useRef<L.LayerGroup | null>(null)
-  const searchAreaRef = useRef<L.Circle | null>(null)
+  const viewerRef = useRef<Cesium.Viewer | null>(null)
+  const entityIdByCesiumId = useRef<Map<unknown, string>>(new Map())
+  const searchAreaEntityRef = useRef<unknown>(null)
   const onAreaClickRef = useRef(onAreaClick)
   const onMarkerClickRef = useRef(onMarkerClick)
   useEffect(() => {
@@ -37,62 +42,75 @@ export function InteractiveMap({ points, onAreaClick, onMarkerClick }: Interacti
   }, [onAreaClick, onMarkerClick])
 
   useEffect(() => {
-    if (!containerRef.current || mapRef.current) return
-    const map = L.map(containerRef.current, {
-      minZoom: 3,
-      maxZoom: 17,
-      maxBounds: SWEDEN_BOUNDS.pad(0.5),
-    }).setView(SWEDEN_CENTER, 4)
-
-    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-      attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors',
-      maxZoom: 19,
-    }).addTo(map)
-
-    markerLayerRef.current = L.layerGroup().addTo(map)
-
-    map.on('click', (e: L.LeafletMouseEvent) => {
-      const { lat, lng } = e.latlng
-      const bbox = bboxAroundPoint(lat, lng)
-      if (searchAreaRef.current) searchAreaRef.current.remove()
-      searchAreaRef.current = L.circle([lat, lng], {
-        radius: CLICK_RADIUS_LAT * 111_000,
-        color: 'var(--color-focus)',
-        weight: 2,
-        fillOpacity: 0.08,
-      }).addTo(map)
-      onAreaClickRef.current(bbox)
+    if (!containerRef.current || viewerRef.current) return
+    const viewer = new Cesium.Viewer(containerRef.current, {
+      baseLayer: Cesium.ImageryLayer.fromProviderAsync(
+        Promise.resolve(new Cesium.OpenStreetMapImageryProvider({ url: 'https://tile.openstreetmap.org/' })),
+      ),
+      baseLayerPicker: false,
+      geocoder: false,
+      homeButton: false,
+      sceneModePicker: false,
+      navigationHelpButton: false,
+      animation: false,
+      timeline: false,
+      fullscreenButton: false,
+      infoBox: false,
+      selectionIndicator: false,
     })
 
-    mapRef.current = map
+    const handler = new Cesium.ScreenSpaceEventHandler(viewer.scene.canvas)
+    handler.setInputAction((click: { position: Cesium.Cartesian2 }) => {
+      const picked = viewer.scene.pick(click.position)
+      const entityId = picked?.id ? entityIdByCesiumId.current.get(picked.id) : undefined
+      if (entityId) {
+        onMarkerClickRef.current(entityId)
+        return
+      }
+
+      const cartesian = viewer.camera.pickEllipsoid(click.position, viewer.scene.globe.ellipsoid)
+      if (!cartesian) return
+      const cartographic = Cesium.Cartographic.fromCartesian(cartesian)
+      const lat = Cesium.Math.toDegrees(cartographic.latitude)
+      const lon = Cesium.Math.toDegrees(cartographic.longitude)
+
+      if (searchAreaEntityRef.current) viewer.entities.remove(searchAreaEntityRef.current as Cesium.Entity)
+      const focusColor = Cesium.Color.fromCssColorString(cssColor('--color-focus', '#4fd1a5'))
+      searchAreaEntityRef.current = viewer.entities.add({
+        position: Cesium.Cartesian3.fromDegrees(lon, lat),
+        ellipse: {
+          semiMinorAxis: CLICK_RADIUS_LAT * 111_000,
+          semiMajorAxis: CLICK_RADIUS_LAT * 111_000,
+          material: focusColor.withAlpha(0.08),
+          outline: true,
+          outlineColor: focusColor,
+        },
+      })
+
+      onAreaClickRef.current(bboxAroundPoint(lat, lon))
+    }, Cesium.ScreenSpaceEventType.LEFT_CLICK)
+
+    viewerRef.current = viewer
     return () => {
-      map.remove()
-      mapRef.current = null
+      handler.destroy()
+      viewer.destroy()
+      viewerRef.current = null
     }
   }, [])
 
   useEffect(() => {
-    const layer = markerLayerRef.current
-    if (!layer) return
-    layer.clearLayers()
+    const viewer = viewerRef.current
+    if (!viewer) return
+    viewer.entities.removeAll()
+    searchAreaEntityRef.current = null
+    entityIdByCesiumId.current = new Map()
     for (const { entity, lat, lon } of points) {
       const { colorVar } = classMeta(entity.entity_class, entity.entity_subclass)
-      const color = `var(${colorVar})`
-      L.circleMarker([lat, lon], {
-        radius: 5,
-        color,
-        fillColor: color,
-        fillOpacity: 0.85,
-        weight: 1,
+      const cesiumEntity = viewer.entities.add({
+        position: Cesium.Cartesian3.fromDegrees(lon, lat),
+        point: { pixelSize: 8, color: Cesium.Color.fromCssColorString(cssColor(colorVar, '#ffffff')) },
       })
-        .bindTooltip(entity.label)
-        .on('click', (e: L.LeafletMouseEvent) => {
-          // Stop the click from also reaching the map's own click handler,
-          // which would otherwise draw an unwanted search circle here too.
-          L.DomEvent.stopPropagation(e)
-          onMarkerClickRef.current(entity.entity_id)
-        })
-        .addTo(layer)
+      entityIdByCesiumId.current.set(cesiumEntity, entity.entity_id)
     }
   }, [points])
 
@@ -100,7 +118,7 @@ export function InteractiveMap({ points, onAreaClick, onMarkerClick }: Interacti
     <div
       ref={containerRef}
       role="application"
-      aria-label="Interactive map of Sweden — pan, zoom, and click an area to search entities near it"
+      aria-label="Interactive 3D globe — pan, zoom, and click an area to search entities near it"
       className="h-full min-h-[420px] w-full"
     />
   )

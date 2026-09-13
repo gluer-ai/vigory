@@ -1,14 +1,13 @@
 /**
- * Regression test for the marker/area-click bug: clicking a plotted marker
- * used to also fire the map's own click handler underneath it, triggering
- * an unwanted area search on top of the intended entity navigation. The
- * fix calls L.DomEvent.stopPropagation() on the marker's click event.
+ * Regression test for click routing: clicking a plotted entity must call
+ * onMarkerClick (not onAreaClick); clicking bare globe must call
+ * onAreaClick with a bbox around the clicked point (not onMarkerClick).
  *
- * Real Leaflet needs real browser layout (getBoundingClientRect etc.) that
- * jsdom can't provide reliably, so `leaflet` is mocked here to a minimal
- * fake that records the handlers InteractiveMap registers — letting this
- * test invoke exactly the marker click handler and assert which callback
- * fires and that propagation is stopped, without a real map/DOM/network.
+ * Real Cesium needs a real WebGL context that jsdom can't provide, so
+ * `cesium` is mocked here to a minimal fake that records the handlers
+ * InteractiveMap registers for LEFT_CLICK — letting this test invoke
+ * exactly that handler and assert which callback fires, without a real
+ * globe/WebGL/network.
  */
 import { render } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
@@ -17,46 +16,44 @@ import { InteractiveMap } from './InteractiveMap'
 
 // vi.mock factories are hoisted above imports, so any state they close over
 // must go through vi.hoisted() rather than a plain top-level `const`/`let`.
-const { stopPropagation, handlers } = vi.hoisted(() => ({
-  stopPropagation: vi.fn(),
-  handlers: {
-    marker: undefined as ((e: unknown) => void) | undefined,
-    map: undefined as ((e: unknown) => void) | undefined,
-  },
-}))
-
-vi.mock('leaflet', () => {
-  const fakeLayer = { addTo: vi.fn().mockReturnThis(), clearLayers: vi.fn() }
-  const fakeMap = {
-    setView: vi.fn().mockReturnThis(),
-    on: vi.fn((event: string, handler: (e: unknown) => void) => {
-      if (event === 'click') handlers.map = handler
-      return fakeMap
-    }),
-    remove: vi.fn(),
-  }
-  const fakeMarker = {
-    bindTooltip: vi.fn().mockReturnThis(),
-    on: vi.fn((event: string, handler: (e: unknown) => void) => {
-      if (event === 'click') handlers.marker = handler
-      return fakeMarker
-    }),
-    addTo: vi.fn().mockReturnThis(),
-  }
-  return {
-    default: {
-      map: vi.fn(() => fakeMap),
-      tileLayer: vi.fn(() => ({ addTo: vi.fn() })),
-      layerGroup: vi.fn(() => fakeLayer),
-      circleMarker: vi.fn(() => fakeMarker),
-      circle: vi.fn(() => ({ addTo: vi.fn().mockReturnThis(), remove: vi.fn() })),
-      LatLngBounds: vi.fn().mockImplementation(function () {
-        return { pad: vi.fn().mockReturnThis() }
-      }),
-      DomEvent: { stopPropagation },
+const { inputActions, fakeViewer } = vi.hoisted(() => {
+  const inputActions: Record<string, (arg: unknown) => void> = {}
+  const fakeViewer = {
+    scene: {
+      canvas: {},
+      pick: vi.fn(),
+      globe: { ellipsoid: {} },
     },
+    camera: { pickEllipsoid: vi.fn() },
+    entities: {
+      add: vi.fn((opts: unknown) => ({ opts })),
+      removeAll: vi.fn(),
+    },
+    destroy: vi.fn(),
   }
+  return { inputActions, fakeViewer }
 })
+
+vi.mock('cesium', () => ({
+  Viewer: vi.fn(function() { return fakeViewer }),
+  OpenStreetMapImageryProvider: vi.fn(),
+  ImageryLayer: {
+    fromProviderAsync: vi.fn(() => Promise.resolve({})),
+  },
+  ScreenSpaceEventHandler: vi.fn(function() {
+    return {
+      setInputAction: vi.fn((fn: (arg: unknown) => void, type: string) => {
+        inputActions[type] = fn
+      }),
+      destroy: vi.fn(),
+    }
+  }),
+  ScreenSpaceEventType: { LEFT_CLICK: 'LEFT_CLICK', MOUSE_MOVE: 'MOUSE_MOVE' },
+  Cartesian3: { fromDegrees: vi.fn() },
+  Cartographic: { fromCartesian: vi.fn(() => ({ latitude: 60.0, longitude: 15.0 })) },
+  Math: { toDegrees: vi.fn((v: number) => v) },
+  Color: { fromCssColorString: vi.fn(() => ({ withAlpha: vi.fn(() => ({})) })) },
+}))
 
 const ENTITY: Entity = {
   entity_id: 'OPENSKY-abc123',
@@ -74,12 +71,12 @@ const ENTITY: Entity = {
 
 afterEach(() => {
   vi.clearAllMocks()
-  handlers.marker = undefined
-  handlers.map = undefined
+  delete inputActions.LEFT_CLICK
+  delete inputActions.MOUSE_MOVE
 })
 
-describe('InteractiveMap marker click', () => {
-  it('calls onMarkerClick and stops propagation, without triggering onAreaClick', () => {
+describe('InteractiveMap click routing', () => {
+  it('calls onMarkerClick and not onAreaClick when a plotted entity is picked', () => {
     const onAreaClick = vi.fn()
     const onMarkerClick = vi.fn()
     render(
@@ -90,16 +87,17 @@ describe('InteractiveMap marker click', () => {
       />,
     )
 
-    expect(handlers.marker).toBeDefined()
-    const fakeEvent = { latlng: { lat: 59.33, lng: 18.06 } }
-    handlers.marker!(fakeEvent)
+    const addedCesiumEntity = fakeViewer.entities.add.mock.results[0].value
+    fakeViewer.scene.pick.mockReturnValue({ id: addedCesiumEntity })
 
-    expect(stopPropagation).toHaveBeenCalledWith(fakeEvent)
+    expect(inputActions.LEFT_CLICK).toBeDefined()
+    inputActions.LEFT_CLICK!({ position: {} })
+
     expect(onMarkerClick).toHaveBeenCalledWith('OPENSKY-abc123')
     expect(onAreaClick).not.toHaveBeenCalled()
   })
 
-  it('map background click (not a marker) still triggers onAreaClick', () => {
+  it('picking bare globe (no entity under the click) calls onAreaClick with the expected bbox', () => {
     const onAreaClick = vi.fn()
     const onMarkerClick = vi.fn()
     render(
@@ -110,15 +108,27 @@ describe('InteractiveMap marker click', () => {
       />,
     )
 
-    expect(handlers.map).toBeDefined()
-    handlers.map!({ latlng: { lat: 60.0, lng: 15.0 } })
+    fakeViewer.scene.pick.mockReturnValue(undefined)
+    fakeViewer.camera.pickEllipsoid.mockReturnValue({})
 
-    expect(onAreaClick).toHaveBeenCalledWith([
-      60.0 - 1.3,
-      60.0 + 1.3,
-      15.0 - 2.5,
-      15.0 + 2.5,
-    ])
+    expect(inputActions.LEFT_CLICK).toBeDefined()
+    inputActions.LEFT_CLICK!({ position: {} })
+
+    expect(onAreaClick).toHaveBeenCalledWith([60.0 - 1.3, 60.0 + 1.3, 15.0 - 2.5, 15.0 + 2.5])
+    expect(onMarkerClick).not.toHaveBeenCalled()
+  })
+
+  it('a click that misses the globe entirely calls neither callback', () => {
+    const onAreaClick = vi.fn()
+    const onMarkerClick = vi.fn()
+    render(<InteractiveMap points={[]} onAreaClick={onAreaClick} onMarkerClick={onMarkerClick} />)
+
+    fakeViewer.scene.pick.mockReturnValue(undefined)
+    fakeViewer.camera.pickEllipsoid.mockReturnValue(undefined)
+
+    inputActions.LEFT_CLICK!({ position: {} })
+
+    expect(onAreaClick).not.toHaveBeenCalled()
     expect(onMarkerClick).not.toHaveBeenCalled()
   })
 })
