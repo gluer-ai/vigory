@@ -7,7 +7,6 @@ import { Inspector } from '../layout/Inspector'
 import { ConfidenceChip, StatusChip } from '../ui/Chip'
 import { InteractiveMap, type MapPoint } from './InteractiveMap'
 
-const SWEDEN_BBOX = '55.0,69.1,10.9,24.2'
 const NEWS_LIMIT = 8
 
 interface MapPageProps {
@@ -46,7 +45,7 @@ export function MapPage({ onSelectEntity }: MapPageProps) {
   useEffect(() => {
     setLoadStatus('loading')
     api
-      .listEntities({ limit: 200, offset: 0, bbox: SWEDEN_BBOX })
+      .listEntities({ limit: 200, offset: 0 })
       .then((rows) => {
         setAllPoints(toPoints(rows))
         setLoadStatus('ready')
