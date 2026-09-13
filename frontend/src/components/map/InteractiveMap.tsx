@@ -36,6 +36,8 @@ export function InteractiveMap({ points, onAreaClick, onMarkerClick }: Interacti
   const searchAreaEntityRef = useRef<unknown>(null)
   const onAreaClickRef = useRef(onAreaClick)
   const onMarkerClickRef = useRef(onMarkerClick)
+  const tooltipRef = useRef<HTMLDivElement>(null)
+  const pointsRef = useRef(points)
   useEffect(() => {
     onAreaClickRef.current = onAreaClick
     onMarkerClickRef.current = onMarkerClick
@@ -90,6 +92,22 @@ export function InteractiveMap({ points, onAreaClick, onMarkerClick }: Interacti
       onAreaClickRef.current(bboxAroundPoint(lat, lon))
     }, Cesium.ScreenSpaceEventType.LEFT_CLICK)
 
+    handler.setInputAction((movement: { endPosition: Cesium.Cartesian2 }) => {
+      const tooltip = tooltipRef.current
+      if (!tooltip) return
+      const picked = viewer.scene.pick(movement.endPosition)
+      const entityId = picked?.id ? entityIdByCesiumId.current.get(picked.id) : undefined
+      const point = entityId ? pointsRef.current.find((p) => p.entity.entity_id === entityId) : undefined
+      if (point) {
+        tooltip.textContent = point.entity.label
+        tooltip.style.left = `${movement.endPosition.x + 12}px`
+        tooltip.style.top = `${movement.endPosition.y + 12}px`
+        tooltip.classList.remove('hidden')
+      } else {
+        tooltip.classList.add('hidden')
+      }
+    }, Cesium.ScreenSpaceEventType.MOUSE_MOVE)
+
     viewerRef.current = viewer
     return () => {
       handler.destroy()
@@ -104,6 +122,7 @@ export function InteractiveMap({ points, onAreaClick, onMarkerClick }: Interacti
     viewer.entities.removeAll()
     searchAreaEntityRef.current = null
     entityIdByCesiumId.current = new Map()
+    pointsRef.current = points
     for (const { entity, lat, lon } of points) {
       const { colorVar } = classMeta(entity.entity_class, entity.entity_subclass)
       const cesiumEntity = viewer.entities.add({
@@ -115,11 +134,17 @@ export function InteractiveMap({ points, onAreaClick, onMarkerClick }: Interacti
   }, [points])
 
   return (
-    <div
-      ref={containerRef}
-      role="application"
-      aria-label="Interactive 3D globe — pan, zoom, and click an area to search entities near it"
-      className="h-full min-h-[420px] w-full"
-    />
+    <div className="relative h-full min-h-[420px] w-full">
+      <div
+        ref={containerRef}
+        role="application"
+        aria-label="Interactive 3D globe — pan, zoom, and click an area to search entities near it"
+        className="h-full w-full"
+      />
+      <div
+        ref={tooltipRef}
+        className="pointer-events-none absolute z-10 hidden rounded bg-[var(--color-surface-1)] px-2 py-1 text-xs text-[var(--color-text-primary)] shadow"
+      />
+    </div>
   )
 }
