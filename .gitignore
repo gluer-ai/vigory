@@ -10,3 +10,5 @@ build/
 .DS_Store
 frontend/node_modules/
 .gg/
+
+.worktrees/
