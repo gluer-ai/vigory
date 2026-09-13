@@ -46,6 +46,12 @@ See `.env.example`. Key ones:
   `vessels` feed), `AISSTREAM_BBOX`, `AISSTREAM_LISTEN_SECONDS`
 - `GDELT_QUERY`, `GDELT_MAXRECORDS` (the `news` feed is free/keyless)
 - none needed for `radio_news` (Sveriges Radio's open API is free/keyless)
+- none needed for `austin_cameras` (City of Austin Open Data is free/keyless)
+- `CALTRANS_DISTRICTS` (optional — which of Caltrans' 12 districts to poll;
+  default covers SF Bay/LA/San Diego/Sacramento; the `caltrans_cameras`
+  feed itself is free/keyless)
+- `TFL_APP_KEY` (optional — only raises the TfL JamCam list-endpoint rate
+  limit; the `tfl_cameras` feed itself is free/keyless)
 - `VITE_API_BASE_URL` (frontend → backend)
 
 ## Architecture
@@ -104,6 +110,11 @@ the last poll's counts per feed. Feeds (`name` in `POST /feeds/{name}/poll`):
 - `news` — GDELT DOC 2.0 API, news articles matching `GDELT_QUERY` (no key)
 - `radio_news` — Sveriges Radio open API, latest Ekot/regional news
   broadcast episodes (no key)
+- `austin_cameras` — City of Austin Open Data, Austin TX traffic cameras
+  (no key)
+- `caltrans_cameras` — Caltrans CCTV, California traffic cameras across
+  `CALTRANS_DISTRICTS` (no key)
+- `tfl_cameras` — TfL JamCams, London traffic cameras (no key)
 
 ## API surface
 `POST/GET/PATCH /entities`, `POST/GET /links`, `GET/POST /schema/classes`,

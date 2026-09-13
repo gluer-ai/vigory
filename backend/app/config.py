@@ -42,6 +42,16 @@ class Settings(BaseSettings):
     gdelt_query: str = "military OR conflict OR security"
     gdelt_maxrecords: int = 50
 
+    # Caltrans CCTV (California traffic cameras). Free, keyless. Comma-
+    # separated district numbers (1-12); default covers the four busiest
+    # metros (SF Bay, LA, San Diego, Sacramento) rather than fetching all 12
+    # districts every poll.
+    caltrans_districts: str = "4,7,11,3"
+
+    # TfL JamCams (London traffic cameras). Free, keyless; an optional app
+    # key only raises the list-endpoint rate limit.
+    tfl_app_key: str = ""
+
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
     @property

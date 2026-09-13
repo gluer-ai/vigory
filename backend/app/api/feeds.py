@@ -13,7 +13,7 @@ from pydantic import BaseModel, Field
 
 from app.config import get_settings
 from app.db.neo4j_client import get_driver
-from app.feeds import aisstream, gdelt, opensky, sverigesradio, trafikverket, usgs
+from app.feeds import aisstream, austin, caltrans, gdelt, opensky, sverigesradio, tfl, trafikverket, usgs
 
 logger = logging.getLogger(__name__)
 
@@ -27,10 +27,14 @@ _POLLERS = {
     "vessels": aisstream.poll_vessels,
     "news": gdelt.poll_news,
     "radio_news": sverigesradio.poll_radio_news,
+    "austin_cameras": austin.poll_cameras,
+    "caltrans_cameras": caltrans.poll_cameras,
+    "tfl_cameras": tfl.poll_cameras,
 }
 
 # Feed name -> Settings attribute that must be non-empty for that feed to
-# run. Feeds not listed here need no secret (earthquakes/aircraft/news/radio_news).
+# run. Feeds not listed here need no secret (earthquakes/aircraft/news/
+# radio_news/austin_cameras/caltrans_cameras/tfl_cameras).
 _REQUIRED_KEY = {
     "situations": "trafikverket_api_key",
     "cameras": "trafikverket_api_key",

@@ -3,7 +3,18 @@ import { useEffect, useState } from 'react'
 import { api, ApiError } from '../../lib/api'
 import type { FeedStatus } from '../../lib/types'
 
-const FEED_NAMES = ['situations', 'cameras', 'earthquakes', 'aircraft', 'vessels', 'news', 'radio_news']
+const FEED_NAMES = [
+  'situations',
+  'cameras',
+  'earthquakes',
+  'aircraft',
+  'vessels',
+  'news',
+  'radio_news',
+  'austin_cameras',
+  'caltrans_cameras',
+  'tfl_cameras',
+]
 
 const FEED_LABELS: Record<string, string> = {
   situations: 'Traffic incidents (Trafikverket)',
@@ -13,6 +24,9 @@ const FEED_LABELS: Record<string, string> = {
   vessels: 'Vessels (aisstream.io)',
   news: 'News (GDELT)',
   radio_news: 'Radio news (Sveriges Radio)',
+  austin_cameras: 'Traffic cameras (Austin)',
+  caltrans_cameras: 'Traffic cameras (Caltrans)',
+  tfl_cameras: 'Traffic cameras (TfL London)',
 }
 
 const SCHEDULE_OPTIONS: { label: string; value: number | null }[] = [
