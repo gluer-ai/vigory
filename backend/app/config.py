@@ -27,6 +27,14 @@ class Settings(BaseSettings):
     trafikverket_api_key: str = ""
     feeds_enabled: bool = True
 
+    # Knowledge-base document uploads (PDF/DOCX/XLSX/TXT/MD -> extraction).
+    # upload_dir is relative to the backend process's working directory by
+    # default; in production (Railway) it must point at a mounted
+    # persistent volume, or uploaded files are lost on the next deploy.
+    upload_dir: str = "uploads"
+    max_upload_mb: int = 20
+    ingest_chunk_chars: int = 8000
+
     # OpenSky Network (aircraft states). Anonymous mode works with no keys;
     # client id/secret enable OAuth2 for higher rate limits.
     opensky_client_id: str = ""
