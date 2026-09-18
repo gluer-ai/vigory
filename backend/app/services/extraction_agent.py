@@ -131,12 +131,22 @@ def _format_link_types(link_defs: list[dict]) -> str:
     return "\n".join(lines)
 
 
-async def extract_from_text(session: AsyncSession, text: str) -> dict:
-    """Call the LLM, validate each proposed entity/link, return a batch dict
-    (valid items + rejected items with reasons) — nothing is committed here.
+async def _extract_and_validate(
+    session: AsyncSession, text: str, extra_existing_entities: list[dict] | None = None
+) -> dict:
+    """Call the LLM, validate each proposed entity/link, return the valid +
+    rejected rows — no IngestBatch is persisted here, so this can be called
+    once per chunk of a larger document without creating a batch per chunk
+    (see app.services.document_ingest.process_document). extra_existing_entities
+    lets a caller fold entities accepted from earlier chunks of the same
+    document into this chunk's "existing entities" context, so a repeated
+    mention across chunks reuses the same entity_id instead of duplicating it.
     """
     class_keys, link_defs, inverse_to_forward = await _fetch_ontology_vocab(session)
     existing_entities = await _fetch_existing_entities(session)
+    if extra_existing_entities:
+        existing_entities = existing_entities + extra_existing_entities
+
     system_prompt = PROMPT_TEMPLATE.format(
         entity_subclasses="\n".join(class_keys),
         link_types=_format_link_types(link_defs),
@@ -188,25 +198,43 @@ async def extract_from_text(session: AsyncSession, text: str) -> dict:
         except (ValidationError, ValueError, TypeError) as e:
             rejected_links.append({"row": row, "reason": str(e)})
 
+    return {
+        "valid_entities": valid_entities,
+        "rejected_entities": rejected_entities,
+        "valid_links": valid_links,
+        "rejected_links": rejected_links,
+    }
+
+
+async def extract_from_text(session: AsyncSession, text: str) -> dict:
+    """Single-shot extraction for pasted scenario text: validate via
+    _extract_and_validate, then persist as a standalone proposed
+    IngestBatch (unlike document_ingest.process_document, which merges
+    several chunks' results into one batch before persisting).
+    """
+    result = await _extract_and_validate(session, text)
     batch_id = f"B-{uuid.uuid4().hex[:8]}"
     batch = {
         "batch_id": batch_id,
         "status": "proposed",
         "source_text": text,
-        "entities": valid_entities,
-        "links": valid_links,
-        "rejected_entities": rejected_entities,
-        "rejected_links": rejected_links,
+        "entities": result["valid_entities"],
+        "links": result["valid_links"],
+        "rejected_entities": result["rejected_entities"],
+        "rejected_links": result["rejected_links"],
     }
     await session.run(
         """
         CREATE (b:IngestBatch {batch_id: $batch_id, status: $status, source_text: $source_text,
-                                entities: $entities, links: $links})
+                                entities: $entities, links: $links,
+                                rejected_entities: $rejected_entities, rejected_links: $rejected_links})
         """,
         batch_id=batch_id,
         status="proposed",
         source_text=text,
-        entities=json.dumps(valid_entities),
-        links=json.dumps(valid_links),
+        entities=json.dumps(result["valid_entities"]),
+        links=json.dumps(result["valid_links"]),
+        rejected_entities=json.dumps(result["rejected_entities"]),
+        rejected_links=json.dumps(result["rejected_links"]),
     )
     return batch

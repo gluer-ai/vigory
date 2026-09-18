@@ -274,3 +274,45 @@ async def test_extract_reuses_existing_entity_instead_of_duplicating(monkeypatch
     assert batch["links"][0]["source_entity"] == "P-1042"
     # only the genuinely new entity is in the batch — the reused one isn't duplicated
     assert {e["entity_id"] for e in batch["entities"]} == {"O-1"}
+
+
+@pytest.mark.asyncio
+async def test_extract_and_validate_folds_extra_existing_entities_into_prompt_and_validation(
+    monkeypatch,
+):
+    """The cross-chunk dedup hook: entities accepted in an earlier chunk of
+    the same document must both appear in the prompt's EXISTING_ENTITIES
+    section and be valid link targets, without being re-declared."""
+    extra_entities = [
+        {"entity_id": "P-99", "label": "Chunk-1 Person", "aliases": [], "entity_class": "PERSON"}
+    ]
+    raw_llm_output = {
+        "entities": [],
+        "links": [
+            {
+                "link_id": "L-1",
+                "link_type": "member_of",
+                "source_entity": "P-99",  # only valid because of extra_existing_entities
+                "target_entity": "P-1042",  # from the graph's EXISTING_ENTITIES
+                "confidence": "B2",
+                "source_ref": "D-1",
+            },
+        ],
+    }
+    captured_prompt = {}
+
+    async def fake_complete_json(system_prompt, user_prompt):
+        captured_prompt["system"] = system_prompt
+        return raw_llm_output
+
+    monkeypatch.setattr(extraction_agent_module, "complete_json", fake_complete_json)
+
+    session = FakeSession()
+    result = await extraction_agent_module._extract_and_validate(
+        session, "chunk 2 text", extra_existing_entities=extra_entities
+    )
+
+    assert "P-99" in captured_prompt["system"]
+    assert result["rejected_links"] == []
+    assert len(result["valid_links"]) == 1
+    assert result["valid_links"][0]["source_entity"] == "P-99"
