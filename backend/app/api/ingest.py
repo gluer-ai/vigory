@@ -26,6 +26,28 @@ async def ingest_text(body: IngestRequest):
             raise HTTPException(status_code=502, detail=str(e))
 
 
+@router.get("/{batch_id}")
+async def get_batch(batch_id: str):
+    driver = get_driver()
+    async with driver.session() as session:
+        result = await session.run(
+            "MATCH (b:IngestBatch {batch_id: $id}) RETURN b", id=batch_id
+        )
+        record = await result.single()
+        if record is None:
+            raise HTTPException(status_code=404, detail="batch not found")
+        batch = dict(record["b"])
+        return {
+            "batch_id": batch["batch_id"],
+            "status": batch["status"],
+            "source_text": batch.get("source_text", ""),
+            "entities": json.loads(batch["entities"]),
+            "links": json.loads(batch["links"]),
+            "rejected_entities": json.loads(batch.get("rejected_entities") or "[]"),
+            "rejected_links": json.loads(batch.get("rejected_links") or "[]"),
+        }
+
+
 @router.post("/{batch_id}/commit")
 async def commit_batch(batch_id: str):
     driver = get_driver()
@@ -67,4 +89,9 @@ async def commit_batch(batch_id: str):
         await session.run(
             "MATCH (b:IngestBatch {batch_id: $id}) SET b.status = 'committed'", id=batch_id
         )
+        if batch.get("document_id"):
+            await session.run(
+                "MATCH (d:Document {document_id: $id}) SET d.status = 'committed'",
+                id=batch["document_id"],
+            )
         return {"batch_id": batch_id, "status": "committed", "entities": len(entities), "links": len(links)}
