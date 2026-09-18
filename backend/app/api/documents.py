@@ -16,9 +16,31 @@ from app.services.document_ingest import process_document, save_upload
 router = APIRouter(prefix="/documents", tags=["documents"])
 
 
+_UPLOAD_READ_CHUNK_BYTES = 1024 * 1024  # 1MB
+
+
 @router.post("/upload", response_model=Document)
 async def upload_document(file: UploadFile, background_tasks: BackgroundTasks):
-    content = await file.read()
+    # Read in bounded chunks and bail out as soon as the accumulated size
+    # exceeds the configured cap, instead of reading the whole (possibly
+    # huge) body into memory before save_upload ever gets a chance to
+    # reject it — bounds memory usage against an oversized/malicious upload.
+    settings = get_settings()
+    max_bytes = settings.max_upload_mb * 1024 * 1024
+    chunks: list[bytes] = []
+    size = 0
+    while True:
+        piece = await file.read(_UPLOAD_READ_CHUNK_BYTES)
+        if not piece:
+            break
+        chunks.append(piece)
+        size += len(piece)
+        if size > max_bytes:
+            raise HTTPException(
+                status_code=400,
+                detail=f"file exceeds {settings.max_upload_mb}MB upload limit",
+            )
+    content = b"".join(chunks)
     driver = get_driver()
     async with driver.session() as session:
         try:

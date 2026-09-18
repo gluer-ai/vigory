@@ -255,6 +255,122 @@ async def test_process_document_merges_chunks_into_one_batch_with_cross_chunk_de
 
 
 @pytest.mark.asyncio
+async def test_process_document_renames_colliding_new_entity_ids_across_chunks(
+    tmp_path, monkeypatch
+):
+    """Two independent chunks can coincidentally mint the SAME entity_id for
+    two genuinely different new entities (e.g. both start their own local
+    "P-temp1" numbering) — unlike the legitimate cross-chunk reuse case
+    above, where a later chunk deliberately omits a repeated entity from its
+    own "entities" array and only references the earlier chunk's real id in
+    a link. This must not silently conflate the two entities: the second
+    chunk's colliding id should be renamed, and its own link remapped to
+    point at the renamed (second) entity.
+    """
+    settings = Settings(upload_dir=str(tmp_path), max_upload_mb=20, ingest_chunk_chars=30)
+    monkeypatch.setattr(document_ingest_module, "get_settings", lambda: settings)
+
+    document_id = "D-collide1"
+    doc_dir = tmp_path / document_id
+    doc_dir.mkdir()
+    (doc_dir / "notes.txt").write_text(
+        "Ivan Petrov commands the unit.\n\nMaria Kuznetsova joined HQ."
+    )
+    document = {
+        "document_id": document_id,
+        "filename": "notes.txt",
+        "file_type": "txt",
+        "size_bytes": 100,
+        "file_path": f"{document_id}/notes.txt",
+        "status": "processing",
+        "error_message": None,
+        "batch_id": None,
+        "uploaded_at": "2026-09-18T00:00:00+00:00",
+    }
+    session = FakeSession(document=document)
+    monkeypatch.setattr(document_ingest_module, "get_driver", lambda: _FakeDriver(session))
+
+    chunk_calls = []
+
+    async def fake_complete_json(system_prompt, user_prompt):
+        chunk_calls.append(user_prompt)
+        if len(chunk_calls) == 1:
+            return {
+                "entities": [
+                    {
+                        "entity_id": "P-temp1",
+                        "entity_class": "PERSON",
+                        "entity_subclass": "PERSON.MILITARY_PERSONNEL",
+                        "label": "Ivan Petrov",
+                        "confidence": "B2",
+                        "source_ref": "notes.txt",
+                    }
+                ],
+                "links": [],
+            }
+        # Second chunk independently (and coincidentally) numbers its own
+        # brand-new entity "P-temp1" too — a DIFFERENT person, not a
+        # reference back to chunk 1's Ivan Petrov.
+        return {
+            "entities": [
+                {
+                    "entity_id": "P-temp1",
+                    "entity_class": "PERSON",
+                    "entity_subclass": "PERSON.MILITARY_PERSONNEL",
+                    "label": "Maria Kuznetsova",
+                    "confidence": "B2",
+                    "source_ref": "notes.txt",
+                },
+                {
+                    "entity_id": "O-1",
+                    "entity_class": "ORGANIZATION",
+                    "entity_subclass": "ORGANIZATION.MILITARY_FORMATION.TACTICAL_FORMATION",
+                    "label": "HQ",
+                    "confidence": "B2",
+                    "source_ref": "notes.txt",
+                },
+            ],
+            "links": [
+                {
+                    "link_id": "L-1",
+                    "link_type": "member_of",
+                    "source_entity": "P-temp1",
+                    "target_entity": "O-1",
+                    "confidence": "B2",
+                    "source_ref": "notes.txt",
+                }
+            ],
+        }
+
+    monkeypatch.setattr(extraction_agent_module, "complete_json", fake_complete_json)
+
+    await document_ingest_module.process_document(document_id)
+
+    assert len(chunk_calls) == 2
+    assert session.created_batch is not None
+    entities = json.loads(session.created_batch["entities"])
+    links = json.loads(session.created_batch["links"])
+
+    # Both entities survive as distinct rows — no overwrite/conflation.
+    assert len(entities) == 3
+    ids = [e["entity_id"] for e in entities]
+    assert len(ids) == len(set(ids))  # every entity_id is unique
+
+    ivan = next(e for e in entities if e["label"] == "Ivan Petrov")
+    maria = next(e for e in entities if e["label"] == "Maria Kuznetsova")
+    hq = next(e for e in entities if e["label"] == "HQ")
+    assert ivan["entity_id"] == "P-temp1"  # first chunk's id is untouched
+    assert maria["entity_id"] != "P-temp1"  # second chunk's collider was renamed
+    assert maria["entity_id"] != ivan["entity_id"]
+
+    # The second chunk's own link must resolve to the SECOND (renamed)
+    # entity, not silently keep pointing at the first chunk's Ivan Petrov.
+    assert len(links) == 1
+    assert links[0]["source_entity"] == maria["entity_id"]
+    assert links[0]["target_entity"] == hq["entity_id"]
+
+
+@pytest.mark.asyncio
 async def test_process_document_sets_error_status_on_parse_failure(tmp_path, monkeypatch):
     settings = Settings(upload_dir=str(tmp_path), max_upload_mb=20, ingest_chunk_chars=8000)
     monkeypatch.setattr(document_ingest_module, "get_settings", lambda: settings)

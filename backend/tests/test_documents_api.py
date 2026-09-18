@@ -124,6 +124,44 @@ async def test_upload_accepts_valid_file_and_schedules_processing(monkeypatch, t
 
 
 @pytest.mark.asyncio
+async def test_upload_rejects_file_over_max_upload_mb_without_buffering_whole_body(
+    monkeypatch, tmp_path
+):
+    """The endpoint must reject an oversized upload with 400 itself — not
+    rely on reading the entire body first and letting save_upload's own
+    size check catch it afterwards. Uses a small configured max_upload_mb
+    (1MB) and a file just over that limit, so the test stays fast without
+    allocating a multi-GB body.
+    """
+    from app.api import documents as documents_module
+    from app.config import Settings
+
+    session = _RecordingSession()
+    monkeypatch.setattr(documents_module, "get_driver", lambda: _FakeDriver(session))
+    monkeypatch.setattr(
+        documents_module,
+        "get_settings",
+        lambda: Settings(upload_dir=str(tmp_path), max_upload_mb=1, ingest_chunk_chars=8000),
+    )
+
+    oversized = b"x" * (1024 * 1024 + 1)  # 1 byte over the 1MB cap
+
+    app = create_app()
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.post(
+            "/documents/upload",
+            files={"file": ("big.txt", io.BytesIO(oversized), "text/plain")},
+        )
+
+    assert resp.status_code == 400
+    assert "exceeds" in resp.json()["detail"]
+    # save_upload (and therefore any DB write) is never reached — the
+    # bounded read loop rejects before the file is even fully consumed.
+    assert session.run_calls == []
+
+
+@pytest.mark.asyncio
 async def test_list_documents_orders_newest_first(monkeypatch):
     from app.api import documents as documents_module
 

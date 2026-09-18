@@ -22,6 +22,55 @@ def _extension(filename: str) -> str:
     return filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
 
 
+def _dedupe_chunk_entity_ids(
+    valid_entities: list[dict], valid_links: list[dict], used_entity_ids: set[str]
+) -> tuple[list[dict], list[dict]]:
+    """Rename any entity_id newly declared in this chunk's valid_entities
+    that happens to collide with an id already used by an EARLIER chunk of
+    this same document. Each chunk is an independent LLM call and the
+    extraction prompt's id examples (e.g. "P-temp1") lead different chunks
+    to number their own new entities from scratch, so two unrelated new
+    entities from different chunks can coincidentally mint the same id —
+    unlike the intentional-reuse path (extra_existing_entities), where a
+    later chunk deliberately reuses a real earlier id and simply omits that
+    entity from its own "entities" array, so it never reaches this function.
+
+    Only ids genuinely new to this chunk are ever renamed; remaps the same
+    old->new id in this chunk's own valid_links so the chunk stays
+    internally consistent. Ids that reuse an earlier chunk's real id via a
+    link only (not re-declared as an entity here) are left untouched.
+    """
+    id_remap: dict[str, str] = {}
+    claimed = set(used_entity_ids)
+    renamed_entities = []
+    for entity in valid_entities:
+        old_id = entity["entity_id"]
+        if old_id in claimed:
+            new_id, suffix = old_id, 1
+            while new_id in claimed:
+                new_id = f"{old_id}-dup{suffix}"
+                suffix += 1
+            id_remap[old_id] = new_id
+            entity = {**entity, "entity_id": new_id}
+        claimed.add(entity["entity_id"])
+        renamed_entities.append(entity)
+
+    if not id_remap:
+        return renamed_entities, valid_links
+
+    renamed_links = [
+        {
+            **link,
+            "source_entity": id_remap.get(link["source_entity"], link["source_entity"]),
+            "target_entity": id_remap.get(link["target_entity"], link["target_entity"]),
+        }
+        if link["source_entity"] in id_remap or link["target_entity"] in id_remap
+        else link
+        for link in valid_links
+    ]
+    return renamed_entities, renamed_links
+
+
 async def save_upload(session: AsyncSession, filename: str, content: bytes) -> dict:
     """Validate, write to disk, and record a new Document node with
     status='processing'. Raises ValueError on a rejected extension or an
@@ -86,15 +135,21 @@ async def process_document(document_id: str) -> None:
             rejected_entities: list[dict] = []
             valid_links: list[dict] = []
             rejected_links: list[dict] = []
+            used_entity_ids: set[str] = set()
             for chunk in chunks:
                 chunk_result = await _extract_and_validate(
                     session, chunk, extra_existing_entities=pending_entities
                 )
-                valid_entities.extend(chunk_result["valid_entities"])
+                chunk_entities, chunk_links = _dedupe_chunk_entity_ids(
+                    chunk_result["valid_entities"], chunk_result["valid_links"], used_entity_ids
+                )
+                used_entity_ids.update(e["entity_id"] for e in chunk_entities)
+
+                valid_entities.extend(chunk_entities)
                 rejected_entities.extend(chunk_result["rejected_entities"])
-                valid_links.extend(chunk_result["valid_links"])
+                valid_links.extend(chunk_links)
                 rejected_links.extend(chunk_result["rejected_links"])
-                pending_entities.extend(chunk_result["valid_entities"])
+                pending_entities.extend(chunk_entities)
 
             batch_id = f"B-{uuid.uuid4().hex[:8]}"
             await session.run(
