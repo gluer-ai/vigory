@@ -64,8 +64,22 @@ async def _fetch_ontology_vocab(
     stops the LLM hallucinating plausible-but-invalid keys, and the extra
     domain/notes context is what lets it disambiguate synonyms (e.g.
     "stationed at") into the correct real link_type instead of guessing.
+
+    Only leaf classes (no other ClassDef subclasses them) are offered as
+    entity_subclass options — intermediate/root nodes like "PERSON" or
+    "PERSON.MILITARY_PERSONNEL" are category headings, not meant to be
+    picked directly when a more specific descendant exists. Trimming them
+    shrinks the injected vocabulary and cuts ambiguity between a category
+    and its own children.
     """
-    classes = await session.run("MATCH (c:ClassDef) RETURN c.key AS key ORDER BY c.key")
+    classes = await session.run(
+        """
+        MATCH (c:ClassDef)
+        WHERE NOT ()-[:SUBCLASS_OF]->(c)
+        RETURN c.key AS key
+        ORDER BY c.key
+        """
+    )
     class_keys = [record["key"] async for record in classes]
 
     links = await session.run(
