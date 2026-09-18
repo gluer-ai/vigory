@@ -1,6 +1,7 @@
 import type {
   ClassDef,
   CommitResult,
+  Document,
   Entity,
   EntityCreateInput,
   ExplainResponse,
@@ -29,6 +30,17 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     ...init,
     headers: { 'content-type': 'application/json', ...init?.headers },
   })
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({ detail: res.statusText }))
+    throw new ApiError(res.status, body.detail ?? res.statusText)
+  }
+  return res.json()
+}
+
+async function requestForm<T>(path: string, form: FormData): Promise<T> {
+  // No content-type header here — the browser sets the multipart boundary
+  // itself; request()'s forced 'application/json' would corrupt the body.
+  const res = await fetch(`${BASE_URL}${path}`, { method: 'POST', body: form })
   if (!res.ok) {
     const body = await res.json().catch(() => ({ detail: res.statusText }))
     throw new ApiError(res.status, body.detail ?? res.statusText)
@@ -68,6 +80,14 @@ export const api = {
     request<IngestBatch>('/ingest', { method: 'POST', body: JSON.stringify({ text }) }),
   commitBatch: (batchId: string) =>
     request<CommitResult>(`/ingest/${encodeURIComponent(batchId)}/commit`, { method: 'POST' }),
+  getBatch: (batchId: string) => request<IngestBatch>(`/ingest/${encodeURIComponent(batchId)}`),
+  uploadDocument: (file: File) => {
+    const form = new FormData()
+    form.append('file', file)
+    return requestForm<Document>('/documents/upload', form)
+  },
+  listDocuments: () => request<Document[]>('/documents'),
+  getDocument: (id: string) => request<Document>(`/documents/${encodeURIComponent(id)}`),
   explainScope: (entityId: string, hops: number) =>
     request<ExplainResponse>(
       `/scenarios/${encodeURIComponent(entityId)}/explain?hops=${hops}`,

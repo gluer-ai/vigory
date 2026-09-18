@@ -127,3 +127,18 @@ export interface FeedStatus {
   error?: string | null
   schedule_interval_seconds: number | null
 }
+
+export type DocumentStatus = 'processing' | 'proposed' | 'committed' | 'error'
+export type DocumentFileType = 'txt' | 'md' | 'pdf' | 'docx' | 'xlsx'
+
+export interface Document {
+  document_id: string
+  filename: string
+  file_type: DocumentFileType
+  size_bytes: number
+  file_path: string
+  status: DocumentStatus
+  error_message: string | null
+  batch_id: string | null
+  uploaded_at: string
+}
