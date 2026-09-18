@@ -32,13 +32,14 @@ def create_app() -> FastAPI:
         neo4j_ok = await verify_connectivity()
         return {"status": "ok" if neo4j_ok else "degraded", "neo4j": neo4j_ok}
 
-    from app.api import entities, feeds, ingest, links, schema, scenarios
+    from app.api import documents, entities, feeds, ingest, links, schema, scenarios
 
     app.include_router(entities.router)
     app.include_router(links.router)
     app.include_router(schema.router)
     app.include_router(scenarios.router)
     app.include_router(ingest.router)
+    app.include_router(documents.router)
     app.include_router(feeds.router)
 
     return app
