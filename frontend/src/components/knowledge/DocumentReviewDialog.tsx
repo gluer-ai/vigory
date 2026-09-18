@@ -34,6 +34,7 @@ export function DocumentReviewDialog({
 
   useEffect(() => {
     if (!open || !batchId) return
+    let cancelled = false
     setPhase('loading')
     setBatch(null)
     setErrorMessage('')
@@ -41,13 +42,20 @@ export function DocumentReviewDialog({
     api
       .getBatch(batchId)
       .then((result) => {
-        setBatch(result)
-        setPhase('ready')
+        if (!cancelled) {
+          setBatch(result)
+          setPhase('ready')
+        }
       })
       .catch((err) => {
-        setErrorMessage(err instanceof ApiError ? err.message : 'Failed to reach the backend')
-        setPhase('error')
+        if (!cancelled) {
+          setErrorMessage(err instanceof ApiError ? err.message : 'Failed to reach the backend')
+          setPhase('error')
+        }
       })
+    return () => {
+      cancelled = true
+    }
   }, [open, batchId])
 
   async function handleCommit() {
