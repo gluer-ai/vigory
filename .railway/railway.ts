@@ -1,4 +1,5 @@
-// Railway Infrastructure as Code — defines the 3 services for Vigory.ai.
+// Railway Infrastructure as Code — defines the 3 services and 2 persistent
+// volumes for Vigory.ai.
 // See DEPLOYMENT.md for the full setup/apply sequence (secrets must be set
 // manually the first time; nothing sensitive is ever written to this file).
 //
@@ -21,6 +22,11 @@ const REPO = "gluer-ai/vigory";
 
 export default defineRailway(() => {
   const neo4jData = volume("neo4j-data", { sizeMB: 2048 });
+  // Knowledge-base document uploads (Settings.upload_dir) — without this,
+  // uploaded files live only on the backend container's ephemeral disk and
+  // are lost on every redeploy. Sized for a demo-scale document library
+  // (20MB/file cap); resize in the Railway dashboard if it fills up.
+  const backendUploads = volume("backend-uploads", { sizeMB: 1024 });
 
   // Private-only: no `domains`, so it's never reachable from the public
   // internet — only over Railway's internal network as neo4j.railway.internal.
@@ -41,12 +47,17 @@ export default defineRailway(() => {
     source: github(REPO, { rootDirectory: "backend" }),
     healthcheck: "/health",
     healthcheckTimeout: 30,
+    volumeMounts: { "/app/uploads": backendUploads },
     env: {
       // neo4j.railway.internal is deterministic from the service name
       // "neo4j" above — update this if that service is ever renamed.
       NEO4J_URI: "bolt://neo4j.railway.internal:7687",
       NEO4J_USER: "neo4j",
       NEO4J_PASSWORD: neo4j.env.NEO4J_PASSWORD,
+      // Absolute path matching the volume mount above — explicit rather
+      // than relying on Settings.upload_dir's relative default ("uploads")
+      // resolving via the container's WORKDIR.
+      UPLOAD_DIR: "/app/uploads",
       LLM_PROVIDER: "openai",
       LLM_MODEL: "gpt-4o",
       OPENAI_API_KEY: preserve(),
@@ -76,6 +87,8 @@ export default defineRailway(() => {
   });
 
   return project("vigory-ai", {
-    resources: [group("Vigory.ai", [neo4jData, neo4j, backend, frontend])],
+    resources: [
+      group("Vigory.ai", [neo4jData, backendUploads, neo4j, backend, frontend]),
+    ],
   });
 });

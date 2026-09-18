@@ -26,6 +26,9 @@ Three services, one Railway project:
   custom Dockerfile — nothing to build), with a persistent volume at
   `/data`, and is **never given a public domain** — the backend reaches it
   only over Railway's private network as `neo4j.railway.internal:7687`.
+- **backend** also has a persistent volume, mounted at `/app/uploads`
+  (`UPLOAD_DIR`), for knowledge-base document uploads — without it,
+  uploaded files are lost on every redeploy.
 - Config lives in `.railway/railway.ts` (Railway's current
   [Infrastructure as Code](https://docs.railway.com/infrastructure-as-code)
   format — the older `railway.json`/`railway.toml` "Config as Code" is
@@ -54,7 +57,7 @@ railway init   # or `railway link` if the project already exists
 railway config plan
 ```
 
-Expect: `Plan: 4 to add` (the volume + 3 services: neo4j, backend, frontend).
+Expect: `Plan: 5 to add` (2 volumes + 3 services: neo4j, backend, frontend).
 
 ## 3. Apply — creates the services (they will fail to boot fully until step 4)
 
