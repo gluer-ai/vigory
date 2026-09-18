@@ -2,6 +2,7 @@ import { Upload } from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
 import { api, ApiError } from '../../lib/api'
 import type { Document } from '../../lib/types'
+import { DocumentReviewDialog } from './DocumentReviewDialog'
 
 const REFRESH_MS = 3000
 
@@ -175,10 +176,12 @@ export function KnowledgeBasePage() {
         )}
       </div>
 
-      {reviewDocId !== null && reviewDoc && (
-        <div className="hidden" data-testid="review-dialog-placeholder" />
-        /* Replaced by DocumentReviewDialog in Task 11. */
-      )}
+      <DocumentReviewDialog
+        open={reviewDocId !== null}
+        batchId={reviewDoc?.batch_id ?? null}
+        onOpenChange={(open) => !open && setReviewDocId(null)}
+        onCommitted={() => {}}
+      />
     </div>
   )
 }
