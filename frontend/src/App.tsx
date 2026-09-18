@@ -10,12 +10,13 @@ import { AddResourceDialog } from './components/layout/AddResourceDialog'
 import { IngestDialog } from './components/layout/IngestDialog'
 import { Inspector } from './components/layout/Inspector'
 import { LeftRail } from './components/layout/LeftRail'
+import { KnowledgeBasePage } from './components/knowledge/KnowledgeBasePage'
 import { Drawer } from './components/ui/Drawer'
 import { api, ApiError } from './lib/api'
 import type { Entity, RelevanceAnnotation, ScopeResponse } from './lib/types'
 
 function App() {
-  const [page, setPage] = useState<'scope' | 'browse' | 'map' | 'feeds'>('scope')
+  const [page, setPage] = useState<'scope' | 'browse' | 'map' | 'feeds' | 'knowledge'>('scope')
   const [triggerEntityId, setTriggerEntityId] = useState('')
   const [hops, setHops] = useState(2)
   const [linkTypeFilter, setLinkTypeFilter] = useState<string[]>([])
@@ -162,6 +163,8 @@ function App() {
             <MapPage onSelectEntity={handleMapSelectEntity} />
           ) : page === 'feeds' ? (
             <FeedsPage />
+          ) : page === 'knowledge' ? (
+            <KnowledgeBasePage />
           ) : (
             canvasContent
           )
