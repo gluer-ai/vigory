@@ -455,3 +455,211 @@ async def test_suggest_entity_502s_on_llm_error(monkeypatch):
         )
 
     assert resp.status_code == 502
+
+
+@pytest.mark.asyncio
+async def test_add_batch_link_happy_path_referencing_batch_entity(monkeypatch):
+    from app.api import ingest as ingest_module
+
+    source = {
+        "entity_id": "P-1",
+        "entity_class": "PERSON",
+        "entity_subclass": "PERSON.MILITARY_PERSONNEL",
+        "label": "Ivan",
+        "aliases": [],
+        "status": "active",
+        "confidence": "B2",
+        "source_ref": "manual",
+        "first_observed": None,
+        "last_observed": None,
+        "attrs": {},
+    }
+    target = {**source, "entity_id": "O-1", "entity_class": "ORGANIZATION"}
+    session = _FakeSession(batch=_make_batch(entities=json.dumps([source, target])))
+    monkeypatch.setattr(ingest_module, "get_driver", lambda: _FakeDriver(session))
+
+    app = create_app()
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.post(
+            "/ingest/B-1/links",
+            json={
+                "link_id": "L-1",
+                "link_type": "member_of",
+                "source_entity": "P-1",
+                "target_entity": "O-1",
+                "direction": "directed",
+                "assertion_status": "reported",
+                "confidence": "B2",
+                "source_ref": "manual",
+                "attrs": {},
+            },
+        )
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert len(body["links"]) == 1
+    assert body["links"][0]["link_id"] == "L-1"
+
+
+@pytest.mark.asyncio
+async def test_add_batch_link_happy_path_referencing_committed_entity(monkeypatch):
+    from app.api import ingest as ingest_module
+
+    session = _FakeSession(
+        batch=_make_batch(),
+        committed_entities={
+            "P-1": {"entity_id": "P-1", "entity_class": "PERSON"},
+            "O-1": {"entity_id": "O-1", "entity_class": "ORGANIZATION"},
+        },
+    )
+    monkeypatch.setattr(ingest_module, "get_driver", lambda: _FakeDriver(session))
+
+    app = create_app()
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.post(
+            "/ingest/B-1/links",
+            json={
+                "link_id": "L-1",
+                "link_type": "member_of",
+                "source_entity": "P-1",
+                "target_entity": "O-1",
+                "direction": "directed",
+                "assertion_status": "reported",
+                "confidence": "B2",
+                "source_ref": "manual",
+                "attrs": {},
+            },
+        )
+
+    assert resp.status_code == 200
+    assert len(resp.json()["links"]) == 1
+
+
+@pytest.mark.asyncio
+async def test_add_batch_link_422s_on_unknown_endpoint(monkeypatch):
+    from app.api import ingest as ingest_module
+
+    session = _FakeSession(batch=_make_batch())
+    monkeypatch.setattr(ingest_module, "get_driver", lambda: _FakeDriver(session))
+
+    app = create_app()
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.post(
+            "/ingest/B-1/links",
+            json={
+                "link_id": "L-1",
+                "link_type": "member_of",
+                "source_entity": "P-unknown",
+                "target_entity": "O-unknown",
+                "direction": "directed",
+                "assertion_status": "reported",
+                "confidence": "B2",
+                "source_ref": "manual",
+                "attrs": {},
+            },
+        )
+
+    assert resp.status_code == 422
+    assert "neither in this batch nor an existing committed entity" in resp.json()["detail"]
+
+
+@pytest.mark.asyncio
+async def test_add_batch_link_422s_on_domain_range_mismatch(monkeypatch):
+    from app.api import ingest as ingest_module
+
+    session = _FakeSession(
+        batch=_make_batch(),
+        committed_entities={
+            "O-1": {"entity_id": "O-1", "entity_class": "ORGANIZATION"},
+            "O-2": {"entity_id": "O-2", "entity_class": "ORGANIZATION"},
+        },
+    )
+    monkeypatch.setattr(ingest_module, "get_driver", lambda: _FakeDriver(session))
+
+    app = create_app()
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        # member_of requires domain=Person, but source is an Organization
+        resp = await client.post(
+            "/ingest/B-1/links",
+            json={
+                "link_id": "L-1",
+                "link_type": "member_of",
+                "source_entity": "O-1",
+                "target_entity": "O-2",
+                "direction": "directed",
+                "assertion_status": "reported",
+                "confidence": "B2",
+                "source_ref": "manual",
+                "attrs": {},
+            },
+        )
+
+    assert resp.status_code == 422
+    assert "requires domain" in resp.json()["detail"]
+
+
+@pytest.mark.asyncio
+async def test_add_batch_link_409s_when_batch_not_proposed(monkeypatch):
+    from app.api import ingest as ingest_module
+
+    session = _FakeSession(batch=_make_batch(status="committed"))
+    monkeypatch.setattr(ingest_module, "get_driver", lambda: _FakeDriver(session))
+
+    app = create_app()
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.post(
+            "/ingest/B-1/links",
+            json={
+                "link_id": "L-1",
+                "link_type": "member_of",
+                "source_entity": "P-1",
+                "target_entity": "O-1",
+                "direction": "directed",
+                "assertion_status": "reported",
+                "confidence": "B2",
+                "source_ref": "manual",
+                "attrs": {},
+            },
+        )
+
+    assert resp.status_code == 409
+
+
+@pytest.mark.asyncio
+async def test_add_batch_link_409s_on_id_collision_with_committed_link(monkeypatch):
+    from app.api import ingest as ingest_module
+
+    session = _FakeSession(
+        batch=_make_batch(),
+        committed_entities={
+            "P-1": {"entity_id": "P-1", "entity_class": "PERSON"},
+            "O-1": {"entity_id": "O-1", "entity_class": "ORGANIZATION"},
+        },
+        committed_links={"L-1": {"link_id": "L-1"}},
+    )
+    monkeypatch.setattr(ingest_module, "get_driver", lambda: _FakeDriver(session))
+
+    app = create_app()
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.post(
+            "/ingest/B-1/links",
+            json={
+                "link_id": "L-1",
+                "link_type": "member_of",
+                "source_entity": "P-1",
+                "target_entity": "O-1",
+                "direction": "directed",
+                "assertion_status": "reported",
+                "confidence": "B2",
+                "source_ref": "manual",
+                "attrs": {},
+            },
+        )
+
+    assert resp.status_code == 409

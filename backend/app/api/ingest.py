@@ -7,7 +7,7 @@ from app.db.neo4j_client import get_driver
 from app.llm.client import LLMError
 from app.models.entity import EntityCreate
 from app.models.link import LinkCreate
-from app.ontology.validate import ValidationError, validate_entity
+from app.ontology.validate import ValidationError, validate_entity, validate_link
 from app.services.entity_resolution import find_synonym_match
 from app.services.extraction_agent import extract_from_text
 
@@ -130,6 +130,63 @@ async def add_batch_entity(batch_id: str, entity: EntityCreate):
             entities=new_entities_json,
         )
         batch["entities"] = new_entities_json
+        return _batch_response(batch)
+
+
+@router.post("/{batch_id}/links")
+async def add_batch_link(batch_id: str, link: LinkCreate):
+    driver = get_driver()
+    async with driver.session() as session:
+        batch = await _get_batch(session, batch_id)
+        _require_proposed(batch)
+
+        batch_links = json.loads(batch["links"])
+        if any(l["link_id"] == link.link_id for l in batch_links):
+            raise HTTPException(
+                status_code=409, detail=f"link_id '{link.link_id}' already used in this batch"
+            )
+        existing_link = await session.run(
+            "MATCH ()-[r:LINK {link_id: $id}]->() RETURN r LIMIT 1", id=link.link_id
+        )
+        if await existing_link.single() is not None:
+            raise HTTPException(
+                status_code=409, detail=f"link_id '{link.link_id}' already exists"
+            )
+
+        batch_entities = json.loads(batch["entities"])
+        class_by_id = {e["entity_id"]: e["entity_class"] for e in batch_entities}
+        for endpoint_id in (link.source_entity, link.target_entity):
+            if endpoint_id in class_by_id:
+                continue
+            result = await session.run(
+                "MATCH (e:Entity {entity_id: $id}) RETURN e", id=endpoint_id
+            )
+            record = await result.single()
+            if record is None:
+                raise HTTPException(
+                    status_code=422,
+                    detail=(
+                        f"link references entity '{endpoint_id}', which is neither in this "
+                        "batch nor an existing committed entity"
+                    ),
+                )
+            class_by_id[endpoint_id] = dict(record["e"])["entity_class"]
+
+        try:
+            await validate_link(
+                session, link, class_by_id[link.source_entity], class_by_id[link.target_entity]
+            )
+        except ValidationError as e:
+            raise HTTPException(status_code=422, detail=str(e))
+
+        batch_links.append(link.model_dump(mode="json"))
+        new_links_json = json.dumps(batch_links)
+        await session.run(
+            "MATCH (b:IngestBatch {batch_id: $id}) SET b.links = $links",
+            id=batch_id,
+            links=new_links_json,
+        )
+        batch["links"] = new_links_json
         return _batch_response(batch)
 
 
