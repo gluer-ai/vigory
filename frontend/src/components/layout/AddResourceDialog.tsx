@@ -4,7 +4,7 @@ import { Plus, Trash2, X } from 'lucide-react'
 import { useEffect, useState } from 'react'
 import { api, ApiError } from '../../lib/api'
 import { ENTITY_CLASS_META } from '../../lib/entityClass'
-import type { ClassDef, LinkDef } from '../../lib/types'
+import type { ClassDef, EntityCreateInput, LinkCreateInput, LinkDef } from '../../lib/types'
 import { Button } from '../ui/Button'
 import { Select } from '../ui/Select'
 
@@ -122,7 +122,13 @@ function TextField({
   )
 }
 
-function EntityForm({ onCreated }: { onCreated: (id: string) => void }) {
+export function EntityForm({
+  onSubmit,
+  onCreated,
+}: {
+  onSubmit: (entity: EntityCreateInput) => Promise<string>
+  onCreated: (id: string) => void
+}) {
   const [classes, setClasses] = useState<ClassDef[]>([])
   const [entityClass, setEntityClass] = useState('PERSON')
   const [entitySubclass, setEntitySubclass] = useState('')
@@ -154,7 +160,7 @@ function EntityForm({ onCreated }: { onCreated: (id: string) => void }) {
     setError('')
     setSubmitting(true)
     try {
-      const created = await api.createEntity({
+      const id = await onSubmit({
         entity_id: entityId.trim(),
         entity_class: entityClass,
         entity_subclass: entitySubclass,
@@ -165,7 +171,7 @@ function EntityForm({ onCreated }: { onCreated: (id: string) => void }) {
         source_ref: sourceRef.trim(),
         attrs: attrsToRecord(attrRows),
       })
-      onCreated(created.entity_id)
+      onCreated(id)
     } catch (err) {
       setError(err instanceof ApiError ? err.message : 'Failed to reach the backend')
     } finally {
@@ -255,7 +261,13 @@ function EntityForm({ onCreated }: { onCreated: (id: string) => void }) {
   )
 }
 
-function LinkForm({ onCreated }: { onCreated: (id: string) => void }) {
+export function LinkForm({
+  onSubmit,
+  onCreated,
+}: {
+  onSubmit: (link: LinkCreateInput) => Promise<string>
+  onCreated: (id: string) => void
+}) {
   const [linkDefs, setLinkDefs] = useState<LinkDef[]>([])
   const [linkId, setLinkId] = useState(`L-${randomSuffix()}`)
   const [linkType, setLinkType] = useState('')
@@ -278,7 +290,7 @@ function LinkForm({ onCreated }: { onCreated: (id: string) => void }) {
     setError('')
     setSubmitting(true)
     try {
-      const created = await api.createLink({
+      const id = await onSubmit({
         link_id: linkId.trim(),
         link_type: linkType,
         source_entity: sourceEntity.trim(),
@@ -289,7 +301,7 @@ function LinkForm({ onCreated }: { onCreated: (id: string) => void }) {
         source_ref: sourceRef.trim(),
         attrs: attrsToRecord(attrRows),
       })
-      onCreated(created.source_entity)
+      onCreated(id)
     } catch (err) {
       setError(err instanceof ApiError ? err.message : 'Failed to reach the backend')
     } finally {
@@ -444,10 +456,16 @@ export function AddResourceDialog({ open, onOpenChange, onCreated }: AddResource
               </Tabs.Trigger>
             </Tabs.List>
             <Tabs.Content value="entity">
-              <EntityForm onCreated={handleCreated} />
+              <EntityForm
+                onSubmit={(entity) => api.createEntity(entity).then((created) => created.entity_id)}
+                onCreated={handleCreated}
+              />
             </Tabs.Content>
             <Tabs.Content value="link">
-              <LinkForm onCreated={handleCreated} />
+              <LinkForm
+                onSubmit={(link) => api.createLink(link).then((created) => created.source_entity)}
+                onCreated={handleCreated}
+              />
             </Tabs.Content>
           </Tabs.Root>
         </Dialog.Content>
