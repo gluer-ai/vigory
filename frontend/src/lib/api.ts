@@ -12,6 +12,7 @@ import type {
   LinkCreateInput,
   LinkDef,
   ScopeResponse,
+  SuggestEntityResponse,
 } from './types'
 
 const BASE_URL = import.meta.env.VITE_API_BASE_URL ?? 'http://localhost:8000'
@@ -81,6 +82,23 @@ export const api = {
   commitBatch: (batchId: string) =>
     request<CommitResult>(`/ingest/${encodeURIComponent(batchId)}/commit`, { method: 'POST' }),
   getBatch: (batchId: string) => request<IngestBatch>(`/ingest/${encodeURIComponent(batchId)}`),
+  suggestBatchEntity: (batchId: string, label: string, entityClass: string, aliases: string[]) => {
+    const params = new URLSearchParams({ label, entity_class: entityClass })
+    if (aliases.length) params.set('aliases', aliases.join(','))
+    return request<SuggestEntityResponse>(
+      `/ingest/${encodeURIComponent(batchId)}/entities/suggest?${params}`,
+    )
+  },
+  addBatchEntity: (batchId: string, entity: EntityCreateInput) =>
+    request<IngestBatch>(`/ingest/${encodeURIComponent(batchId)}/entities`, {
+      method: 'POST',
+      body: JSON.stringify(entity),
+    }),
+  addBatchLink: (batchId: string, link: LinkCreateInput) =>
+    request<IngestBatch>(`/ingest/${encodeURIComponent(batchId)}/links`, {
+      method: 'POST',
+      body: JSON.stringify(link),
+    }),
   uploadDocument: (file: File) => {
     const form = new FormData()
     form.append('file', file)

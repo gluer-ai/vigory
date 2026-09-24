@@ -70,6 +70,19 @@ export interface IngestBatch {
   rejected_links: RejectedRow[]
 }
 
+export interface SynonymMatch {
+  entity_id: string
+  label: string
+  aliases: string[]
+  entity_class: string
+  entity_subclass: string
+}
+
+export interface SuggestEntityResponse {
+  match: SynonymMatch | null
+  reason: string | null
+}
+
 export interface CommitResult {
   batch_id: string
   status: 'committed'
