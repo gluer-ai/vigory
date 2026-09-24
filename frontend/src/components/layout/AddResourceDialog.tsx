@@ -4,7 +4,7 @@ import { Plus, Trash2, X } from 'lucide-react'
 import { useEffect, useState } from 'react'
 import { api, ApiError } from '../../lib/api'
 import { ENTITY_CLASS_META } from '../../lib/entityClass'
-import type { ClassDef, EntityCreateInput, LinkCreateInput, LinkDef } from '../../lib/types'
+import type { ClassDef, EntityCreateInput, LinkCreateInput, LinkDef, SynonymMatch } from '../../lib/types'
 import { Button } from '../ui/Button'
 import { Select } from '../ui/Select'
 
@@ -125,9 +125,17 @@ function TextField({
 export function EntityForm({
   onSubmit,
   onCreated,
+  onCheckSynonym,
+  onUseExisting,
 }: {
   onSubmit: (entity: EntityCreateInput) => Promise<string>
   onCreated: (id: string) => void
+  onCheckSynonym?: (
+    label: string,
+    entityClass: string,
+    aliases: string[],
+  ) => Promise<{ match: SynonymMatch; reason: string } | null>
+  onUseExisting?: (entityId: string) => void
 }) {
   const [classes, setClasses] = useState<ClassDef[]>([])
   const [entityClass, setEntityClass] = useState('PERSON')
@@ -141,6 +149,12 @@ export function EntityForm({
   const [attrRows, setAttrRows] = useState<{ key: string; value: string }[]>([])
   const [error, setError] = useState('')
   const [submitting, setSubmitting] = useState(false)
+  const [checkNote, setCheckNote] = useState('')
+  const [pendingMatch, setPendingMatch] = useState<{
+    match: SynonymMatch
+    reason: string
+    payload: EntityCreateInput
+  } | null>(null)
 
   useEffect(() => {
     api.getClasses().then(setClasses).catch(() => setClasses([]))
@@ -155,28 +169,61 @@ export function EntityForm({
     .filter((c) => c.key === entityClass || c.key.startsWith(`${entityClass}.`))
     .map((c) => ({ value: c.key, label: c.key }))
 
-  async function handleSubmit(e: React.FormEvent) {
-    e.preventDefault()
-    setError('')
+  async function doCreate(payload: EntityCreateInput) {
     setSubmitting(true)
     try {
-      const id = await onSubmit({
-        entity_id: entityId.trim(),
-        entity_class: entityClass,
-        entity_subclass: entitySubclass,
-        label: label.trim(),
-        aliases: aliases.split(',').map((a) => a.trim()).filter(Boolean),
-        status: status as 'active' | 'inactive' | 'destroyed' | 'unknown',
-        confidence: confidence.trim(),
-        source_ref: sourceRef.trim(),
-        attrs: attrsToRecord(attrRows),
-      })
+      const id = await onSubmit(payload)
       onCreated(id)
     } catch (err) {
       setError(err instanceof ApiError ? err.message : 'Failed to reach the backend')
     } finally {
       setSubmitting(false)
     }
+  }
+
+  async function handleSubmit(e: React.FormEvent) {
+    e.preventDefault()
+    setError('')
+    setCheckNote('')
+    const payload: EntityCreateInput = {
+      entity_id: entityId.trim(),
+      entity_class: entityClass,
+      entity_subclass: entitySubclass,
+      label: label.trim(),
+      aliases: aliases.split(',').map((a) => a.trim()).filter(Boolean),
+      status: status as 'active' | 'inactive' | 'destroyed' | 'unknown',
+      confidence: confidence.trim(),
+      source_ref: sourceRef.trim(),
+      attrs: attrsToRecord(attrRows),
+    }
+
+    if (onCheckSynonym) {
+      setSubmitting(true)
+      try {
+        const result = await onCheckSynonym(payload.label, payload.entity_class, payload.aliases)
+        setSubmitting(false)
+        if (result) {
+          setPendingMatch({ ...result, payload })
+          return
+        }
+      } catch {
+        setCheckNote("Couldn't check for duplicates — continuing without it.")
+        setSubmitting(false)
+      }
+    }
+
+    await doCreate(payload)
+  }
+
+  function handleUseExisting() {
+    if (pendingMatch) onUseExisting?.(pendingMatch.match.entity_id)
+    setPendingMatch(null)
+  }
+
+  function handleCreateAnyway() {
+    const payload = pendingMatch?.payload
+    setPendingMatch(null)
+    if (payload) void doCreate(payload)
   }
 
   return (
@@ -250,13 +297,32 @@ export function EntityForm({
         </p>
       )}
 
-      <Button
-        type="submit"
-        variant="primary"
-        disabled={submitting || !entitySubclass || !label.trim() || !confidence.trim() || !sourceRef.trim()}
-      >
-        {submitting ? 'Creating…' : 'Create entity'}
-      </Button>
+      {checkNote && <p className="text-xs text-[var(--color-text-muted)]">{checkNote}</p>}
+
+      {pendingMatch ? (
+        <div className="rounded-md border border-[var(--color-border)] p-3 text-sm">
+          <p className="text-[var(--color-text-primary)]">
+            Looks like an existing entity: <strong>{pendingMatch.match.label}</strong> (
+            {pendingMatch.match.entity_subclass}). {pendingMatch.reason}
+          </p>
+          <div className="mt-2 flex gap-2">
+            <Button type="button" variant="primary" onClick={handleUseExisting}>
+              Use existing
+            </Button>
+            <Button type="button" onClick={handleCreateAnyway}>
+              Create new anyway
+            </Button>
+          </div>
+        </div>
+      ) : (
+        <Button
+          type="submit"
+          variant="primary"
+          disabled={submitting || !entitySubclass || !label.trim() || !confidence.trim() || !sourceRef.trim()}
+        >
+          {submitting ? 'Creating…' : 'Create entity'}
+        </Button>
+      )}
     </form>
   )
 }
