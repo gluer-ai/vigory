@@ -1,12 +1,14 @@
 import json
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel
 
 from app.db.neo4j_client import get_driver
 from app.llm.client import LLMError
 from app.models.entity import EntityCreate
 from app.models.link import LinkCreate
+from app.ontology.validate import ValidationError, validate_entity
+from app.services.entity_resolution import find_synonym_match
 from app.services.extraction_agent import extract_from_text
 
 router = APIRouter(prefix="/ingest", tags=["ingest"])
@@ -14,6 +16,33 @@ router = APIRouter(prefix="/ingest", tags=["ingest"])
 
 class IngestRequest(BaseModel):
     text: str
+
+
+async def _get_batch(session, batch_id: str) -> dict:
+    result = await session.run(
+        "MATCH (b:IngestBatch {batch_id: $id}) RETURN b", id=batch_id
+    )
+    record = await result.single()
+    if record is None:
+        raise HTTPException(status_code=404, detail="batch not found")
+    return dict(record["b"])
+
+
+def _require_proposed(batch: dict) -> None:
+    if batch["status"] != "proposed":
+        raise HTTPException(status_code=409, detail=f"batch already {batch['status']}")
+
+
+def _batch_response(batch: dict) -> dict:
+    return {
+        "batch_id": batch["batch_id"],
+        "status": batch["status"],
+        "source_text": batch.get("source_text", ""),
+        "entities": json.loads(batch["entities"]),
+        "links": json.loads(batch["links"]),
+        "rejected_entities": json.loads(batch.get("rejected_entities") or "[]"),
+        "rejected_links": json.loads(batch.get("rejected_links") or "[]"),
+    }
 
 
 @router.post("")
@@ -30,37 +59,86 @@ async def ingest_text(body: IngestRequest):
 async def get_batch(batch_id: str):
     driver = get_driver()
     async with driver.session() as session:
-        result = await session.run(
-            "MATCH (b:IngestBatch {batch_id: $id}) RETURN b", id=batch_id
-        )
-        record = await result.single()
-        if record is None:
-            raise HTTPException(status_code=404, detail="batch not found")
-        batch = dict(record["b"])
+        batch = await _get_batch(session, batch_id)
+        return _batch_response(batch)
+
+
+@router.get("/{batch_id}/entities/suggest")
+async def suggest_entity(
+    batch_id: str,
+    label: str = Query(...),
+    entity_class: str = Query(...),
+    aliases: str = Query(""),
+):
+    driver = get_driver()
+    async with driver.session() as session:
+        batch = await _get_batch(session, batch_id)
+        batch_entities = json.loads(batch["entities"])
+        alias_list = [a.strip() for a in aliases.split(",") if a.strip()]
+        try:
+            match = await find_synonym_match(
+                session, label, entity_class, alias_list, batch_entities
+            )
+        except LLMError as e:
+            raise HTTPException(status_code=502, detail=str(e))
+
+        if match is None:
+            return {"match": None, "reason": None}
         return {
-            "batch_id": batch["batch_id"],
-            "status": batch["status"],
-            "source_text": batch.get("source_text", ""),
-            "entities": json.loads(batch["entities"]),
-            "links": json.loads(batch["links"]),
-            "rejected_entities": json.loads(batch.get("rejected_entities") or "[]"),
-            "rejected_links": json.loads(batch.get("rejected_links") or "[]"),
+            "match": {
+                "entity_id": match["entity_id"],
+                "label": match["label"],
+                "aliases": match.get("aliases", []),
+                "entity_class": match.get("entity_class", entity_class),
+                "entity_subclass": match.get("entity_subclass", ""),
+            },
+            "reason": match.get("reason", ""),
         }
+
+
+@router.post("/{batch_id}/entities")
+async def add_batch_entity(batch_id: str, entity: EntityCreate):
+    driver = get_driver()
+    async with driver.session() as session:
+        batch = await _get_batch(session, batch_id)
+        _require_proposed(batch)
+
+        batch_entities = json.loads(batch["entities"])
+        if any(e["entity_id"] == entity.entity_id for e in batch_entities):
+            raise HTTPException(
+                status_code=409,
+                detail=f"entity_id '{entity.entity_id}' already used in this batch",
+            )
+        existing = await session.run(
+            "MATCH (e:Entity {entity_id: $id}) RETURN e", id=entity.entity_id
+        )
+        if await existing.single() is not None:
+            raise HTTPException(
+                status_code=409, detail=f"entity_id '{entity.entity_id}' already exists"
+            )
+
+        try:
+            await validate_entity(session, entity)
+        except ValidationError as e:
+            raise HTTPException(status_code=422, detail=str(e))
+
+        batch_entities.append(entity.model_dump(mode="json"))
+        new_entities_json = json.dumps(batch_entities)
+        await session.run(
+            "MATCH (b:IngestBatch {batch_id: $id}) SET b.entities = $entities",
+            id=batch_id,
+            entities=new_entities_json,
+        )
+        batch["entities"] = new_entities_json
+        return _batch_response(batch)
 
 
 @router.post("/{batch_id}/commit")
 async def commit_batch(batch_id: str):
     driver = get_driver()
     async with driver.session() as session:
-        result = await session.run(
-            "MATCH (b:IngestBatch {batch_id: $id}) RETURN b", id=batch_id
-        )
-        record = await result.single()
-        if record is None:
-            raise HTTPException(status_code=404, detail="batch not found")
-        batch = dict(record["b"])
-        if batch["status"] != "proposed":
-            raise HTTPException(status_code=409, detail=f"batch already {batch['status']}")
+        batch = await _get_batch(session, batch_id)
+        _require_proposed(batch)
 
         entities = json.loads(batch["entities"])
         links = json.loads(batch["links"])
