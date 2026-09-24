@@ -237,41 +237,63 @@ Return strict JSON: {{"classifications": [{{"idx": <int>, "entity_subclass": "<k
 entry per entity you could confidently classify, omitting the rest. Return JSON only, no prose."""
 
 
+# A single-call classification prompt degrades as row count grows — more
+# candidates to weigh per row on top of a larger overall response to hold
+# together, and a big real-world rejected batch (chunked extraction over a
+# long document, no cross-chunk dedup on rejections) easily runs past 90
+# rows. Chunking here mirrors chunking.chunk_text's role for extraction
+# itself: bound each LLM call's scope instead of asking one call to reason
+# over the whole set at once.
+_CLASSIFY_CHUNK_SIZE = 25
+
+
+def _format_classify_lines(rejected_entities: list[dict], start: int) -> list[str]:
+    lines = []
+    for offset, r in enumerate(rejected_entities):
+        idx = start + offset
+        row = r.get("row", {})
+        label = row.get("label") or row.get("entity_id") or f"row {idx}"
+        attempted = f"{row.get('entity_class', '?')}/{row.get('entity_subclass', '?')}"
+        lines.append(f"{idx} | {label} (attempted: {attempted}) | {r.get('reason', '')}")
+    return lines
+
+
 async def classify_rejected_entities(session: AsyncSession, rejected_entities: list[dict]) -> list[dict]:
     """For entities rejected only because their proposed entity_subclass wasn't
     a real ontology key, ask the LLM to pick the closest real leaf key using
     the label + originally-attempted class/subclass as context — the bulk-
-    create counterpart to picking a subclass by hand for every row. Returns
+    create counterpart to picking a subclass by hand for every row. Processes
+    rejected_entities in chunks of _CLASSIFY_CHUNK_SIZE (one LLM call per
+    chunk) rather than one call for the whole set. Returns
     [{"idx": <index into rejected_entities>, "entity_subclass": <key>,
     "entity_class": <root>}], one entry per row it could confidently
     classify; a row it can't match is simply omitted, left for the reviewer
-    to pick manually. Raises LLMError untouched if the LLM call fails.
+    to pick manually. Raises LLMError untouched if any chunk's LLM call
+    fails — chunks already classified before the failure are lost with it,
+    since a partial result silently hiding a real failure is worse than
+    surfacing it and letting the reviewer retry.
     """
     if not rejected_entities:
         return []
 
     class_keys, _, _ = await _fetch_ontology_vocab(session)
-
-    lines = []
-    for idx, r in enumerate(rejected_entities):
-        row = r.get("row", {})
-        label = row.get("label") or row.get("entity_id") or f"row {idx}"
-        attempted = f"{row.get('entity_class', '?')}/{row.get('entity_subclass', '?')}"
-        lines.append(f"{idx} | {label} (attempted: {attempted}) | {r.get('reason', '')}")
-
-    prompt = CLASSIFY_PROMPT_TEMPLATE.format(
-        entity_subclasses="\n".join(class_keys), entities="\n".join(lines)
-    )
-    raw = await complete_json(prompt, "Classify the entities listed above.")
-
     valid_keys = set(class_keys)
-    valid_indices = set(range(len(rejected_entities)))
+
     results = []
-    for c in raw.get("classifications", []):
-        idx = c.get("idx")
-        key = c.get("entity_subclass")
-        if idx in valid_indices and key in valid_keys:
-            results.append({"idx": idx, "entity_subclass": key, "entity_class": key.split(".")[0]})
+    for start in range(0, len(rejected_entities), _CLASSIFY_CHUNK_SIZE):
+        chunk = rejected_entities[start : start + _CLASSIFY_CHUNK_SIZE]
+        lines = _format_classify_lines(chunk, start)
+        prompt = CLASSIFY_PROMPT_TEMPLATE.format(
+            entity_subclasses="\n".join(class_keys), entities="\n".join(lines)
+        )
+        raw = await complete_json(prompt, "Classify the entities listed above.")
+
+        valid_indices = set(range(start, start + len(chunk)))
+        for c in raw.get("classifications", []):
+            idx = c.get("idx")
+            key = c.get("entity_subclass")
+            if idx in valid_indices and key in valid_keys:
+                results.append({"idx": idx, "entity_subclass": key, "entity_class": key.split(".")[0]})
     return results
 
 

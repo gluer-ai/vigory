@@ -385,6 +385,41 @@ async def test_classify_rejected_entities_ignores_hallucinated_key_and_index(mon
 
 
 @pytest.mark.asyncio
+async def test_classify_rejected_entities_splits_large_batches_into_chunks(monkeypatch):
+    """A batch bigger than _CLASSIFY_CHUNK_SIZE must become multiple LLM
+    calls, each scoped to its own slice of rows with globally-correct idx
+    values — the regression this guards is a single giant prompt covering
+    the whole batch, which degrades as row count grows."""
+    monkeypatch.setattr(extraction_agent_module, "_CLASSIFY_CHUNK_SIZE", 2)
+
+    rejected = [
+        {"row": {"label": f"Entity {i}", "entity_class": "Person", "entity_subclass": "Person.Individual"}, "reason": "x"}
+        for i in range(5)
+    ]
+
+    calls = []
+    # 5 rows at chunk size 2 -> chunks start at 0, 2, 4; each call classifies
+    # only its chunk's first row, to prove idx values are global (not reset
+    # to 0 per chunk).
+    chunk_starts = [0, 2, 4]
+
+    async def fake_complete_json(system_prompt, user_prompt):
+        calls.append(system_prompt)
+        start = chunk_starts[len(calls) - 1]
+        return {"classifications": [{"idx": start, "entity_subclass": "PERSON.MILITARY_PERSONNEL"}]}
+
+    monkeypatch.setattr(extraction_agent_module, "complete_json", fake_complete_json)
+
+    session = FakeSession()
+    result = await extraction_agent_module.classify_rejected_entities(session, rejected)
+
+    assert len(calls) == 3
+    assert {r["idx"] for r in result} == {0, 2, 4}
+    assert "Entity 0" in calls[0] and "Entity 1" in calls[0] and "Entity 2" not in calls[0]
+    assert "Entity 4" in calls[2] and "Entity 3" not in calls[2]
+
+
+@pytest.mark.asyncio
 async def test_classify_rejected_entities_skips_llm_call_when_nothing_to_classify(monkeypatch):
     called = False
 
