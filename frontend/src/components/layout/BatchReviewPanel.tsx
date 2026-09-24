@@ -50,10 +50,12 @@ export function BatchReviewPanel({
   const [rowErrors, setRowErrors] = useState<Record<number, string>>({})
   const [bulkCreating, setBulkCreating] = useState(false)
   const [classifying, setClassifying] = useState(false)
+  const [entitySuccessMessage, setEntitySuccessMessage] = useState('')
 
   const [linkIncludedRows, setLinkIncludedRows] = useState<Record<number, boolean>>({})
   const [linkRowErrors, setLinkRowErrors] = useState<Record<number, string>>({})
   const [bulkLinkCreating, setBulkLinkCreating] = useState(false)
+  const [linkSuccessMessage, setLinkSuccessMessage] = useState('')
 
   function loadClasses() {
     setClassesStatus('loading')
@@ -144,11 +146,15 @@ export function BatchReviewPanel({
     }
 
     setBulkCreating(true)
+    setEntitySuccessMessage('')
     const newErrors: Record<number, string> = {}
+    let attempted = 0
+    let succeeded = 0
     for (const { row, idx } of rejectedEntities) {
       if (!(includedRows[idx] ?? true)) continue
       const subclass = picks[idx]
       if (!subclass) continue
+      attempted += 1
 
       const rawAliases = row.aliases
       const aliases = Array.isArray(rawAliases)
@@ -168,12 +174,22 @@ export function BatchReviewPanel({
       try {
         const updated = await api.addBatchEntity(batch.batch_id, payload)
         onBatchUpdated(updated)
+        succeeded += 1
       } catch (err) {
         newErrors[idx] = err instanceof ApiError ? err.message : 'Failed to reach the backend'
       }
     }
     setRowErrors(newErrors)
     setBulkCreating(false)
+    if (attempted > 0) {
+      setEntitySuccessMessage(
+        succeeded === attempted
+          ? `✓ Created ${succeeded} ${succeeded === 1 ? 'entity' : 'entities'} successfully.`
+          : `Created ${succeeded} of ${attempted} entities — ${attempted - succeeded} failed, see details below.`,
+      )
+    } else {
+      setEntitySuccessMessage("Nothing to create — check a row and pick (or wait for auto-classify to find) a subclass.")
+    }
   }
 
   // Resubmits a rejected link row as-is (no field editing) — the common
@@ -183,9 +199,13 @@ export function BatchReviewPanel({
   // itself was invalid) still has the per-row "Create…" button to edit it.
   async function handleBulkCreateLinks() {
     setBulkLinkCreating(true)
+    setLinkSuccessMessage('')
     const newErrors: Record<number, string> = {}
+    let attempted = 0
+    let succeeded = 0
     for (const { row, idx } of rejectedLinks) {
       if (!(linkIncludedRows[idx] ?? true)) continue
+      attempted += 1
       const payload: LinkCreateInput = {
         link_id: str(row.link_id) || `L-${idx}-${Date.now()}`,
         link_type: str(row.link_type),
@@ -200,12 +220,20 @@ export function BatchReviewPanel({
       try {
         const updated = await api.addBatchLink(batch.batch_id, payload)
         onBatchUpdated(updated)
+        succeeded += 1
       } catch (err) {
         newErrors[idx] = err instanceof ApiError ? err.message : 'Failed to reach the backend'
       }
     }
     setLinkRowErrors(newErrors)
     setBulkLinkCreating(false)
+    if (attempted > 0) {
+      setLinkSuccessMessage(
+        succeeded === attempted
+          ? `✓ Created ${succeeded} ${succeeded === 1 ? 'link' : 'links'} successfully.`
+          : `Created ${succeeded} of ${attempted} links — ${attempted - succeeded} failed, see details below.`,
+      )
+    }
   }
 
   function openAddLink(prefill: Partial<LinkCreateInput> | null) {
@@ -402,6 +430,14 @@ export function BatchReviewPanel({
             </tbody>
           </table>
         </div>
+      )}
+
+      {entitySuccessMessage && (
+        <p className="text-sm text-[var(--color-text-primary)]">{entitySuccessMessage}</p>
+      )}
+
+      {linkSuccessMessage && (
+        <p className="text-sm text-[var(--color-text-primary)]">{linkSuccessMessage}</p>
       )}
 
       {commitError && (
