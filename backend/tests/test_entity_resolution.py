@@ -202,3 +202,41 @@ async def test_llm_error_propagates(monkeypatch):
         await entity_resolution_module.find_synonym_match(
             session, label="Automobile", entity_class="VEHICLE", aliases=[], batch_entities=[]
         )
+
+
+@pytest.mark.asyncio
+async def test_candidate_with_none_aliases_is_normalized_to_empty_list(monkeypatch):
+    """Test that a Neo4j entity with no aliases property (None) is normalized
+    to an empty list when returned as a match. This simulates entities that
+    were created or imported without going through this app's entity creation
+    paths."""
+    session = FakeSession(
+        entities=[
+            {
+                "entity_id": "V-1",
+                "label": "Car",
+                "aliases": None,
+                "entity_class": "VEHICLE",
+                "entity_subclass": "VEHICLE.CIVILIAN_VEHICLE.CIVILIAN_CAR",
+            },
+        ]
+    )
+
+    async def fake_complete_json(system_prompt, user_prompt):
+        assert "V-1 | Car" in system_prompt
+        return {"match_entity_id": "V-1", "reason": "Automobile is a synonym of Car"}
+
+    monkeypatch.setattr(entity_resolution_module, "complete_json", fake_complete_json)
+
+    match = await entity_resolution_module.find_synonym_match(
+        session, label="Automobile", entity_class="VEHICLE", aliases=[], batch_entities=[]
+    )
+
+    assert match == {
+        "entity_id": "V-1",
+        "label": "Car",
+        "aliases": [],
+        "entity_class": "VEHICLE",
+        "entity_subclass": "VEHICLE.CIVILIAN_VEHICLE.CIVILIAN_CAR",
+        "reason": "Automobile is a synonym of Car",
+    }

@@ -55,7 +55,11 @@ async def find_synonym_match(
         entity_class=entity_class,
         limit=_CANDIDATE_LIMIT,
     )
-    candidates = [dict(record) async for record in result]
+    candidates = []
+    async for record in result:
+        row = dict(record)
+        row["aliases"] = row.get("aliases") or []
+        candidates.append(row)
     candidates += [
         {
             "entity_id": e["entity_id"],
