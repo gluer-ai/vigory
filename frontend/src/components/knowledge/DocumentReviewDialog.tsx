@@ -106,6 +106,7 @@ export function DocumentReviewDialog({
               onCommit={handleCommit}
               committing={phase === 'committing'}
               commitError={commitError}
+              onBatchUpdated={setBatch}
             />
           )}
 

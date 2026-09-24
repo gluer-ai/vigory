@@ -144,6 +144,7 @@ export function IngestDialog({ open, onOpenChange, onCommitted }: IngestDialogPr
               onCommit={handleCommit}
               committing={phase === 'committing'}
               commitError={commitError}
+              onBatchUpdated={setBatch}
               extraActions={
                 <Button onClick={reset} disabled={phase === 'committing'}>
                   Start over
