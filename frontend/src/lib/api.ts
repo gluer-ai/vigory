@@ -30,6 +30,14 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(`${BASE_URL}${path}`, {
     ...init,
     headers: { 'content-type': 'application/json', ...init?.headers },
+    // Without this, a request that never gets a response (a stalled proxy,
+    // a backend that hung) leaves its caller's promise pending forever —
+    // no rejection ever fires, so a "Loading…" UI state has no way to
+    // become an error state. 60s (not something shorter) because several
+    // callers through this same helper (ingestText, explainScope,
+    // suggestBatchEntity) make real LLM calls with a large injected-
+    // ontology system prompt and can legitimately take a while.
+    signal: init?.signal ?? AbortSignal.timeout(60000),
   })
   if (!res.ok) {
     const body = await res.json().catch(() => ({ detail: res.statusText }))
