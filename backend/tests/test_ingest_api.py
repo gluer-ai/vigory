@@ -631,6 +631,72 @@ async def test_add_batch_link_409s_when_batch_not_proposed(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_classify_entities_returns_classifications(monkeypatch):
+    from app.api import ingest as ingest_module
+
+    rejected = [
+        {
+            "row": {"label": "Ben Bernanke", "entity_class": "Person", "entity_subclass": "Person.Individual"},
+            "reason": "entity_subclass 'Person.Individual' is not a known ClassDef key",
+        }
+    ]
+    session = _FakeSession(batch=_make_batch(rejected_entities=json.dumps(rejected)))
+    monkeypatch.setattr(ingest_module, "get_driver", lambda: _FakeDriver(session))
+
+    async def fake_classify(session, rejected_entities):
+        assert rejected_entities == rejected
+        return [{"idx": 0, "entity_subclass": "PERSON.MILITARY_PERSONNEL", "entity_class": "PERSON"}]
+
+    monkeypatch.setattr(ingest_module, "classify_rejected_entities", fake_classify)
+
+    app = create_app()
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.post("/ingest/B-1/entities/classify")
+
+    assert resp.status_code == 200
+    assert resp.json() == {
+        "classifications": [{"idx": 0, "entity_subclass": "PERSON.MILITARY_PERSONNEL", "entity_class": "PERSON"}]
+    }
+
+
+@pytest.mark.asyncio
+async def test_classify_entities_404s_when_batch_missing(monkeypatch):
+    from app.api import ingest as ingest_module
+
+    session = _FakeSession(batch=_make_batch())
+    monkeypatch.setattr(ingest_module, "get_driver", lambda: _FakeDriver(session))
+
+    app = create_app()
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.post("/ingest/B-missing/entities/classify")
+
+    assert resp.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_classify_entities_502s_on_llm_error(monkeypatch):
+    from app.api import ingest as ingest_module
+    from app.llm.client import LLMError
+
+    session = _FakeSession(batch=_make_batch(rejected_entities=json.dumps([{"row": {}, "reason": "x"}])))
+    monkeypatch.setattr(ingest_module, "get_driver", lambda: _FakeDriver(session))
+
+    async def fake_classify(session, rejected_entities):
+        raise LLMError("boom")
+
+    monkeypatch.setattr(ingest_module, "classify_rejected_entities", fake_classify)
+
+    app = create_app()
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.post("/ingest/B-1/entities/classify")
+
+    assert resp.status_code == 502
+
+
+@pytest.mark.asyncio
 async def test_add_batch_link_409s_on_id_collision_with_committed_link(monkeypatch):
     from app.api import ingest as ingest_module
 

@@ -220,6 +220,61 @@ async def _extract_and_validate(
     }
 
 
+CLASSIFY_PROMPT_TEMPLATE = """You are re-classifying entities that were rejected from a batch because \
+their proposed entity_subclass wasn't a real key in this ontology. For each numbered entity below, pick \
+the single best-matching REAL leaf key from ENTITY_SUBCLASSES. Use the label and the entity's originally- \
+attempted class/subclass as context for what kind of thing it is — a hallucinated subclass name like \
+"Event.Bankruptcy" still tells you it's an EVENT-shaped thing, so pick the closest real EVENT leaf. If \
+truly nothing fits, omit that entity rather than guessing wildly.
+
+ENTITY_SUBCLASSES:
+{entity_subclasses}
+
+ENTITIES TO CLASSIFY — each line is "<idx> | label (attempted: entity_class/entity_subclass) | reason":
+{entities}
+
+Return strict JSON: {{"classifications": [{{"idx": <int>, "entity_subclass": "<key>"}}, ...]}} — one \
+entry per entity you could confidently classify, omitting the rest. Return JSON only, no prose."""
+
+
+async def classify_rejected_entities(session: AsyncSession, rejected_entities: list[dict]) -> list[dict]:
+    """For entities rejected only because their proposed entity_subclass wasn't
+    a real ontology key, ask the LLM to pick the closest real leaf key using
+    the label + originally-attempted class/subclass as context — the bulk-
+    create counterpart to picking a subclass by hand for every row. Returns
+    [{"idx": <index into rejected_entities>, "entity_subclass": <key>,
+    "entity_class": <root>}], one entry per row it could confidently
+    classify; a row it can't match is simply omitted, left for the reviewer
+    to pick manually. Raises LLMError untouched if the LLM call fails.
+    """
+    if not rejected_entities:
+        return []
+
+    class_keys, _, _ = await _fetch_ontology_vocab(session)
+
+    lines = []
+    for idx, r in enumerate(rejected_entities):
+        row = r.get("row", {})
+        label = row.get("label") or row.get("entity_id") or f"row {idx}"
+        attempted = f"{row.get('entity_class', '?')}/{row.get('entity_subclass', '?')}"
+        lines.append(f"{idx} | {label} (attempted: {attempted}) | {r.get('reason', '')}")
+
+    prompt = CLASSIFY_PROMPT_TEMPLATE.format(
+        entity_subclasses="\n".join(class_keys), entities="\n".join(lines)
+    )
+    raw = await complete_json(prompt, "Classify the entities listed above.")
+
+    valid_keys = set(class_keys)
+    valid_indices = set(range(len(rejected_entities)))
+    results = []
+    for c in raw.get("classifications", []):
+        idx = c.get("idx")
+        key = c.get("entity_subclass")
+        if idx in valid_indices and key in valid_keys:
+            results.append({"idx": idx, "entity_subclass": key, "entity_class": key.split(".")[0]})
+    return results
+
+
 async def extract_from_text(session: AsyncSession, text: str) -> dict:
     """Single-shot extraction for pasted scenario text: validate via
     _extract_and_validate, then persist as a standalone proposed

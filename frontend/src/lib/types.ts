@@ -83,6 +83,16 @@ export interface SuggestEntityResponse {
   reason: string | null
 }
 
+export interface EntityClassification {
+  idx: number
+  entity_subclass: string
+  entity_class: string
+}
+
+export interface ClassifyEntitiesResponse {
+  classifications: EntityClassification[]
+}
+
 export interface CommitResult {
   batch_id: string
   status: 'committed'

@@ -9,7 +9,7 @@ from app.models.entity import EntityCreate
 from app.models.link import LinkCreate
 from app.ontology.validate import ValidationError, validate_entity, validate_link
 from app.services.entity_resolution import find_synonym_match
-from app.services.extraction_agent import extract_from_text
+from app.services.extraction_agent import classify_rejected_entities, extract_from_text
 
 router = APIRouter(prefix="/ingest", tags=["ingest"])
 
@@ -94,6 +94,19 @@ async def suggest_entity(
             },
             "reason": match.get("reason", ""),
         }
+
+
+@router.post("/{batch_id}/entities/classify")
+async def classify_entities(batch_id: str):
+    driver = get_driver()
+    async with driver.session() as session:
+        batch = await _get_batch(session, batch_id)
+        rejected_entities = json.loads(batch.get("rejected_entities") or "[]")
+        try:
+            classifications = await classify_rejected_entities(session, rejected_entities)
+        except LLMError as e:
+            raise HTTPException(status_code=502, detail=str(e))
+        return {"classifications": classifications}
 
 
 @router.post("/{batch_id}/entities")

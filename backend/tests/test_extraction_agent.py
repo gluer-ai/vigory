@@ -316,3 +316,108 @@ async def test_extract_and_validate_folds_extra_existing_entities_into_prompt_an
     assert result["rejected_links"] == []
     assert len(result["valid_links"]) == 1
     assert result["valid_links"][0]["source_entity"] == "P-99"
+
+
+@pytest.mark.asyncio
+async def test_classify_rejected_entities_returns_valid_leaf_keys(monkeypatch):
+    rejected = [
+        {
+            "row": {
+                "label": "Ben Bernanke",
+                "entity_class": "Person",
+                "entity_subclass": "Person.Individual",
+            },
+            "reason": "entity_subclass 'Person.Individual' is not a known ClassDef key",
+        },
+        {
+            "row": {
+                "label": "Bogus Thing",
+                "entity_class": "Nonsense",
+                "entity_subclass": "Nonsense.Thing",
+            },
+            "reason": "entity_subclass 'Nonsense.Thing' is not a known ClassDef key",
+        },
+    ]
+
+    async def fake_complete_json(system_prompt, user_prompt):
+        assert "Ben Bernanke" in system_prompt
+        assert "PERSON.MILITARY_PERSONNEL" in system_prompt
+        return {
+            "classifications": [
+                {"idx": 0, "entity_subclass": "PERSON.MILITARY_PERSONNEL"},
+                # row 1: the model correctly declines rather than guessing
+            ]
+        }
+
+    monkeypatch.setattr(extraction_agent_module, "complete_json", fake_complete_json)
+
+    session = FakeSession()
+    result = await extraction_agent_module.classify_rejected_entities(session, rejected)
+
+    assert result == [
+        {"idx": 0, "entity_subclass": "PERSON.MILITARY_PERSONNEL", "entity_class": "PERSON"}
+    ]
+
+
+@pytest.mark.asyncio
+async def test_classify_rejected_entities_ignores_hallucinated_key_and_index(monkeypatch):
+    rejected = [
+        {
+            "row": {"label": "Ben Bernanke", "entity_class": "Person", "entity_subclass": "Person.Individual"},
+            "reason": "entity_subclass 'Person.Individual' is not a known ClassDef key",
+        },
+    ]
+
+    async def fake_complete_json(system_prompt, user_prompt):
+        return {
+            "classifications": [
+                {"idx": 0, "entity_subclass": "MADE_UP.NOT_REAL"},  # not a real key
+                {"idx": 7, "entity_subclass": "PERSON.MILITARY_PERSONNEL"},  # out-of-range index
+            ]
+        }
+
+    monkeypatch.setattr(extraction_agent_module, "complete_json", fake_complete_json)
+
+    session = FakeSession()
+    result = await extraction_agent_module.classify_rejected_entities(session, rejected)
+
+    assert result == []
+
+
+@pytest.mark.asyncio
+async def test_classify_rejected_entities_skips_llm_call_when_nothing_to_classify(monkeypatch):
+    called = False
+
+    async def fake_complete_json(system_prompt, user_prompt):
+        nonlocal called
+        called = True
+        return {"classifications": []}
+
+    monkeypatch.setattr(extraction_agent_module, "complete_json", fake_complete_json)
+
+    session = FakeSession()
+    result = await extraction_agent_module.classify_rejected_entities(session, [])
+
+    assert result == []
+    assert called is False
+
+
+@pytest.mark.asyncio
+async def test_classify_rejected_entities_propagates_llm_error(monkeypatch):
+    from app.llm.client import LLMError
+
+    rejected = [
+        {
+            "row": {"label": "Ben Bernanke", "entity_class": "Person", "entity_subclass": "Person.Individual"},
+            "reason": "entity_subclass 'Person.Individual' is not a known ClassDef key",
+        },
+    ]
+
+    async def fake_complete_json(system_prompt, user_prompt):
+        raise LLMError("boom")
+
+    monkeypatch.setattr(extraction_agent_module, "complete_json", fake_complete_json)
+
+    session = FakeSession()
+    with pytest.raises(LLMError):
+        await extraction_agent_module.classify_rejected_entities(session, rejected)

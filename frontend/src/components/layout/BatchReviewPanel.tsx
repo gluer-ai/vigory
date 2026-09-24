@@ -49,6 +49,7 @@ export function BatchReviewPanel({
   const [includedRows, setIncludedRows] = useState<Record<number, boolean>>({})
   const [rowErrors, setRowErrors] = useState<Record<number, string>>({})
   const [bulkCreating, setBulkCreating] = useState(false)
+  const [classifying, setClassifying] = useState(false)
 
   const [linkIncludedRows, setLinkIncludedRows] = useState<Record<number, boolean>>({})
   const [linkRowErrors, setLinkRowErrors] = useState<Record<number, string>>({})
@@ -87,9 +88,11 @@ export function BatchReviewPanel({
     .map((r, idx) => ({ ...r, idx }))
     .filter(({ row }) => !batch.links.some((l) => l.link_id === str(row.link_id)))
 
-  const readyToCreateCount = rejectedEntities.filter(
-    ({ idx }) => (includedRows[idx] ?? true) && subclassByRow[idx],
-  ).length
+  // Included, not "included AND already picked" — a row without a manual
+  // pick still gets created: handleBulkCreate auto-classifies anything
+  // left blank as part of the same click, so this reflects what one click
+  // on "Create N entities" will actually attempt.
+  const includedEntityCount = rejectedEntities.filter(({ idx }) => includedRows[idx] ?? true).length
   const allEntitiesIncluded = rejectedEntities.length > 0 && rejectedEntities.every(({ idx }) => includedRows[idx] ?? true)
 
   const readyToCreateLinkCount = rejectedLinks.filter(({ idx }) => linkIncludedRows[idx] ?? true).length
@@ -112,11 +115,39 @@ export function BatchReviewPanel({
   }
 
   async function handleBulkCreate() {
+    // Auto-classify anything the reviewer didn't pick manually, in one LLM
+    // call for the whole set, so "Create N entities" is a single click
+    // rather than requiring a subclass pick per row first. A manual pick
+    // (subclassByRow already set) is always respected over the guess.
+    let picks = subclassByRow
+    const needsClassification = rejectedEntities.some(
+      ({ idx }) => (includedRows[idx] ?? true) && !subclassByRow[idx],
+    )
+    if (needsClassification) {
+      setClassifying(true)
+      try {
+        const { classifications } = await api.classifyRejectedEntities(batch.batch_id)
+        const guessByIdx = new Map(classifications.map((c) => [c.idx, c.entity_subclass]))
+        const merged = { ...subclassByRow }
+        for (const { idx } of rejectedEntities) {
+          const guess = guessByIdx.get(idx)
+          if (guess && !merged[idx]) merged[idx] = guess
+        }
+        picks = merged
+        setSubclassByRow(merged)
+      } catch {
+        // Fail open — rows that still have no pick (manual or guessed) are
+        // simply skipped below and stay in the Rejected list, same as if
+        // classification had never been attempted.
+      }
+      setClassifying(false)
+    }
+
     setBulkCreating(true)
     const newErrors: Record<number, string> = {}
     for (const { row, idx } of rejectedEntities) {
       if (!(includedRows[idx] ?? true)) continue
-      const subclass = subclassByRow[idx]
+      const subclass = picks[idx]
       if (!subclass) continue
 
       const rawAliases = row.aliases
@@ -244,11 +275,13 @@ export function BatchReviewPanel({
               <Button
                 variant="primary"
                 onClick={handleBulkCreate}
-                disabled={bulkCreating || readyToCreateCount === 0}
+                disabled={bulkCreating || classifying || includedEntityCount === 0}
               >
-                {bulkCreating
-                  ? 'Creating…'
-                  : `Create ${readyToCreateCount} ${readyToCreateCount === 1 ? 'entity' : 'entities'}`}
+                {classifying
+                  ? 'Classifying…'
+                  : bulkCreating
+                    ? 'Creating…'
+                    : `Create ${includedEntityCount} ${includedEntityCount === 1 ? 'entity' : 'entities'}`}
               </Button>
             </div>
           </div>

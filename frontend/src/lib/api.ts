@@ -1,5 +1,6 @@
 import type {
   ClassDef,
+  ClassifyEntitiesResponse,
   CommitResult,
   Document,
   Entity,
@@ -101,6 +102,10 @@ export const api = {
     request<IngestBatch>(`/ingest/${encodeURIComponent(batchId)}/entities`, {
       method: 'POST',
       body: JSON.stringify(entity),
+    }),
+  classifyRejectedEntities: (batchId: string) =>
+    request<ClassifyEntitiesResponse>(`/ingest/${encodeURIComponent(batchId)}/entities/classify`, {
+      method: 'POST',
     }),
   addBatchLink: (batchId: string, link: LinkCreateInput) =>
     request<IngestBatch>(`/ingest/${encodeURIComponent(batchId)}/links`, {
