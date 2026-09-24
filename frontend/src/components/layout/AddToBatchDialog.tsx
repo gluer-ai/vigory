@@ -11,13 +11,24 @@ interface AddToBatchDialogProps {
   batch: IngestBatch
   defaultTab: 'entity' | 'link'
   onBatchUpdated: (batch: IngestBatch) => void
+  /** Prefills the Link tab — used when opened via a rejected link's
+   * "Create…" button, so its already-known type/endpoints don't need
+   * retyping. Undefined for the plain "+ Add link" entry point. */
+  initialLink?: Partial<LinkCreateInput>
 }
 
 /** "+Add entity"/"+Add link" for a proposed IngestBatch under review —
  * reuses AddResourceDialog's forms, but targets the batch-scoped
  * POST /ingest/{id}/entities|links endpoints (staged, not committed) and
  * wires the entity form's synonym-suggestion step. */
-export function AddToBatchDialog({ open, onOpenChange, batch, defaultTab, onBatchUpdated }: AddToBatchDialogProps) {
+export function AddToBatchDialog({
+  open,
+  onOpenChange,
+  batch,
+  defaultTab,
+  onBatchUpdated,
+  initialLink,
+}: AddToBatchDialogProps) {
   function handleDone() {
     onOpenChange(false)
   }
@@ -84,6 +95,7 @@ export function AddToBatchDialog({ open, onOpenChange, batch, defaultTab, onBatc
                 }
                 onCreated={handleDone}
                 localEntities={batch.entities}
+                initialValues={initialLink}
               />
             </Tabs.Content>
           </Tabs.Root>

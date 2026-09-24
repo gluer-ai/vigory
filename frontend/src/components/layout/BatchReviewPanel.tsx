@@ -1,9 +1,11 @@
-import { useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import type { ReactNode } from 'react'
-import type { IngestBatch } from '../../lib/types'
+import { api, ApiError } from '../../lib/api'
+import type { ClassDef, EntityCreateInput, IngestBatch, LinkCreateInput } from '../../lib/types'
 import { AddToBatchDialog } from './AddToBatchDialog'
 import { Button } from '../ui/Button'
 import { ConfidenceChip, ProposedChip } from '../ui/Chip'
+import { Select } from '../ui/Select'
 
 interface BatchReviewPanelProps {
   batch: IngestBatch
@@ -16,6 +18,10 @@ interface BatchReviewPanelProps {
   /** Extra button(s) rendered before Commit, e.g. IngestDialog's "Start
    * over" — DocumentReviewDialog has no equivalent and omits this. */
   extraActions?: ReactNode
+}
+
+function str(value: unknown, fallback = ''): string {
+  return typeof value === 'string' && value.trim() ? value : fallback
 }
 
 /** Entities/links/rejected review table + commit button — shared between
@@ -33,6 +39,78 @@ export function BatchReviewPanel({
   extraActions,
 }: BatchReviewPanelProps) {
   const [addTab, setAddTab] = useState<'entity' | 'link' | null>(null)
+  const [prefillLink, setPrefillLink] = useState<Partial<LinkCreateInput> | null>(null)
+
+  const [classes, setClasses] = useState<ClassDef[]>([])
+  const [subclassByRow, setSubclassByRow] = useState<Record<number, string>>({})
+  const [includedRows, setIncludedRows] = useState<Record<number, boolean>>({})
+  const [rowErrors, setRowErrors] = useState<Record<number, string>>({})
+  const [bulkCreating, setBulkCreating] = useState(false)
+
+  useEffect(() => {
+    api.getClasses().then(setClasses).catch(() => setClasses([]))
+  }, [])
+
+  // Leaf classes only — same "no other ClassDef subclasses it" rule the
+  // extraction prompt itself uses, so the picker only ever offers a real,
+  // directly-assignable key (not a category heading like "PERSON").
+  const leafClassOptions = useMemo(() => {
+    const parentKeys = new Set(classes.map((c) => c.parent_key).filter((k): k is string => k !== null))
+    return classes.filter((c) => !parentKeys.has(c.key)).map((c) => ({ value: c.key, label: c.key }))
+  }, [classes])
+
+  // A rejected row's own id already existing in the (now-updated) batch
+  // means it was already fixed — via bulk-create below or a prior attempt
+  // — so drop it from view instead of showing a stale rejection forever.
+  const rejectedEntities = batch.rejected_entities
+    .map((r, idx) => ({ ...r, idx }))
+    .filter(({ row }) => !batch.entities.some((e) => e.entity_id === str(row.entity_id)))
+  const rejectedLinks = batch.rejected_links
+    .map((r, idx) => ({ ...r, idx }))
+    .filter(({ row }) => !batch.links.some((l) => l.link_id === str(row.link_id)))
+
+  const readyToCreateCount = rejectedEntities.filter(
+    ({ idx }) => (includedRows[idx] ?? true) && subclassByRow[idx],
+  ).length
+
+  async function handleBulkCreate() {
+    setBulkCreating(true)
+    const newErrors: Record<number, string> = {}
+    for (const { row, idx } of rejectedEntities) {
+      if (!(includedRows[idx] ?? true)) continue
+      const subclass = subclassByRow[idx]
+      if (!subclass) continue
+
+      const rawAliases = row.aliases
+      const aliases = Array.isArray(rawAliases)
+        ? rawAliases.filter((a): a is string => typeof a === 'string')
+        : []
+      const payload: EntityCreateInput = {
+        entity_id: str(row.entity_id) || `E-${idx}-${Date.now()}`,
+        entity_class: subclass.split('.')[0],
+        entity_subclass: subclass,
+        label: str(row.label) || str(row.entity_id) || 'Unnamed',
+        aliases,
+        status: 'active',
+        confidence: str(row.confidence) || 'C3',
+        source_ref: str(row.source_ref),
+        attrs: {},
+      }
+      try {
+        const updated = await api.addBatchEntity(batch.batch_id, payload)
+        onBatchUpdated(updated)
+      } catch (err) {
+        newErrors[idx] = err instanceof ApiError ? err.message : 'Failed to reach the backend'
+      }
+    }
+    setRowErrors(newErrors)
+    setBulkCreating(false)
+  }
+
+  function openAddLink(prefill: Partial<LinkCreateInput> | null) {
+    setPrefillLink(prefill)
+    setAddTab('link')
+  }
 
   return (
     <div className="flex flex-col gap-4">
@@ -64,7 +142,7 @@ export function BatchReviewPanel({
       <ResultTable
         title={`Links (${batch.links.length})`}
         empty="No links extracted."
-        action={<Button onClick={() => setAddTab('link')}>+ Add link</Button>}
+        action={<Button onClick={() => openAddLink(null)}>+ Add link</Button>}
       >
         {batch.links.map((l) => (
           <tr key={l.link_id} className="border-b border-[var(--color-border)]">
@@ -78,14 +156,82 @@ export function BatchReviewPanel({
         ))}
       </ResultTable>
 
-      {(batch.rejected_entities.length > 0 || batch.rejected_links.length > 0) && (
+      {rejectedEntities.length > 0 && (
+        <div className="rounded-md border border-[var(--color-border)] p-3">
+          <div className="mb-2 flex items-center justify-between gap-2">
+            <h3 className="text-xs font-semibold uppercase tracking-wide text-[var(--color-text-muted)]">
+              Rejected entities ({rejectedEntities.length})
+            </h3>
+            <Button
+              variant="primary"
+              onClick={handleBulkCreate}
+              disabled={bulkCreating || readyToCreateCount === 0}
+            >
+              {bulkCreating ? 'Creating…' : `Create ${readyToCreateCount} ${readyToCreateCount === 1 ? 'entity' : 'entities'}`}
+            </Button>
+          </div>
+          <table className="w-full border-collapse text-sm">
+            <tbody>
+              {rejectedEntities.map(({ row, reason, idx }) => {
+                const rowLabel = str(row.label) || str(row.entity_id) || `row ${idx + 1}`
+                return (
+                  <tr key={idx} className="border-b border-[var(--color-border)] align-top">
+                    <td className="w-6 py-1.5 pe-2">
+                      <input
+                        type="checkbox"
+                        checked={includedRows[idx] ?? true}
+                        onChange={(e) => setIncludedRows((prev) => ({ ...prev, [idx]: e.target.checked }))}
+                        aria-label={`Include ${rowLabel}`}
+                      />
+                    </td>
+                    <td className="py-1.5 pe-3">
+                      <div className="text-[var(--color-text-primary)]">{rowLabel}</div>
+                      <div className="text-xs text-[var(--color-text-muted)]">{reason}</div>
+                      {rowErrors[idx] && (
+                        <div className="text-xs text-[var(--color-status-destroyed)]">{rowErrors[idx]}</div>
+                      )}
+                    </td>
+                    <td className="w-56 py-1.5">
+                      <Select
+                        value={subclassByRow[idx] ?? ''}
+                        onValueChange={(v) => setSubclassByRow((prev) => ({ ...prev, [idx]: v }))}
+                        options={leafClassOptions}
+                        placeholder={leafClassOptions.length ? 'Choose a subclass…' : 'Loading…'}
+                        aria-label={`Subclass for ${rowLabel}`}
+                      />
+                    </td>
+                  </tr>
+                )
+              })}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      {rejectedLinks.length > 0 && (
         <div className="rounded-md border border-[var(--color-border)] p-3">
           <h3 className="mb-1 text-xs font-semibold uppercase tracking-wide text-[var(--color-text-muted)]">
-            Rejected ({batch.rejected_entities.length + batch.rejected_links.length})
+            Rejected links ({rejectedLinks.length})
           </h3>
           <ul className="flex flex-col gap-1 text-xs text-[var(--color-text-muted)]">
-            {[...batch.rejected_entities, ...batch.rejected_links].map((r, i) => (
-              <li key={i}>{r.reason}</li>
+            {rejectedLinks.map(({ row, reason, idx }) => (
+              <li key={idx} className="flex items-center justify-between gap-2">
+                <span>{reason}</span>
+                <Button
+                  onClick={() =>
+                    openAddLink({
+                      link_id: str(row.link_id) || undefined,
+                      link_type: str(row.link_type) || undefined,
+                      source_entity: str(row.source_entity) || undefined,
+                      target_entity: str(row.target_entity) || undefined,
+                      confidence: str(row.confidence) || undefined,
+                      source_ref: str(row.source_ref) || undefined,
+                    })
+                  }
+                >
+                  Create…
+                </Button>
+              </li>
             ))}
           </ul>
         </div>
@@ -115,6 +261,7 @@ export function BatchReviewPanel({
           batch={batch}
           defaultTab={addTab}
           onBatchUpdated={onBatchUpdated}
+          initialLink={addTab === 'link' ? (prefillLink ?? undefined) : undefined}
         />
       )}
     </div>

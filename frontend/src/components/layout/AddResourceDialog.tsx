@@ -332,6 +332,7 @@ export function LinkForm({
   onSubmit,
   onCreated,
   localEntities,
+  initialValues,
 }: {
   onSubmit: (link: LinkCreateInput) => Promise<string>
   onCreated: (id: string) => void
@@ -339,16 +340,21 @@ export function LinkForm({
    * searchable EntityPicker. Undefined preserves AddResourceDialog's
    * original plain-text-input behavior. */
   localEntities?: Entity[]
+  /** Seeds the form fields on mount — used to prefill from a rejected
+   * link's already-known data (label/type/endpoints) so fixing a
+   * rejection doesn't mean retyping everything from scratch. Read once,
+   * at mount, since a fresh LinkForm mounts every time this dialog opens. */
+  initialValues?: Partial<LinkCreateInput>
 }) {
   const [linkDefs, setLinkDefs] = useState<LinkDef[]>([])
-  const [linkId, setLinkId] = useState(`L-${randomSuffix()}`)
-  const [linkType, setLinkType] = useState('')
-  const [sourceEntity, setSourceEntity] = useState('')
-  const [targetEntity, setTargetEntity] = useState('')
-  const [direction, setDirection] = useState('directed')
-  const [assertionStatus, setAssertionStatus] = useState('reported')
-  const [confidence, setConfidence] = useState('C3')
-  const [sourceRef, setSourceRef] = useState('')
+  const [linkId, setLinkId] = useState(initialValues?.link_id || `L-${randomSuffix()}`)
+  const [linkType, setLinkType] = useState(initialValues?.link_type ?? '')
+  const [sourceEntity, setSourceEntity] = useState(initialValues?.source_entity ?? '')
+  const [targetEntity, setTargetEntity] = useState(initialValues?.target_entity ?? '')
+  const [direction, setDirection] = useState<string>(initialValues?.direction ?? 'directed')
+  const [assertionStatus, setAssertionStatus] = useState<string>(initialValues?.assertion_status ?? 'reported')
+  const [confidence, setConfidence] = useState(initialValues?.confidence || 'C3')
+  const [sourceRef, setSourceRef] = useState(initialValues?.source_ref ?? '')
   const [attrRows, setAttrRows] = useState<{ key: string; value: string }[]>([])
   const [error, setError] = useState('')
   const [submitting, setSubmitting] = useState(false)
