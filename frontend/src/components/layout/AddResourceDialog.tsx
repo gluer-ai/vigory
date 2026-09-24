@@ -4,9 +4,10 @@ import { Plus, Trash2, X } from 'lucide-react'
 import { useEffect, useState } from 'react'
 import { api, ApiError } from '../../lib/api'
 import { ENTITY_CLASS_META } from '../../lib/entityClass'
-import type { ClassDef, EntityCreateInput, LinkCreateInput, LinkDef, SynonymMatch } from '../../lib/types'
+import type { ClassDef, Entity, EntityCreateInput, LinkCreateInput, LinkDef, SynonymMatch } from '../../lib/types'
 import { Button } from '../ui/Button'
 import { Select } from '../ui/Select'
+import { EntityPicker } from './EntityPicker'
 
 interface AddResourceDialogProps {
   open: boolean
@@ -330,9 +331,14 @@ export function EntityForm({
 export function LinkForm({
   onSubmit,
   onCreated,
+  localEntities,
 }: {
   onSubmit: (link: LinkCreateInput) => Promise<string>
   onCreated: (id: string) => void
+  /** When provided (batch-review context), source/target become a
+   * searchable EntityPicker. Undefined preserves AddResourceDialog's
+   * original plain-text-input behavior. */
+  localEntities?: Entity[]
 }) {
   const [linkDefs, setLinkDefs] = useState<LinkDef[]>([])
   const [linkId, setLinkId] = useState(`L-${randomSuffix()}`)
@@ -392,20 +398,47 @@ export function LinkForm({
       </div>
 
       <div className="grid grid-cols-2 gap-3">
-        <TextField
-          label="Source entity ID"
-          value={sourceEntity}
-          onChange={(e) => setSourceEntity(e.target.value)}
-          placeholder="e.g. P-1042"
-          required
-        />
-        <TextField
-          label="Target entity ID"
-          value={targetEntity}
-          onChange={(e) => setTargetEntity(e.target.value)}
-          placeholder="e.g. O-233"
-          required
-        />
+        {localEntities !== undefined ? (
+          <>
+            <div className="flex flex-col gap-1.5">
+              {labelFor('Source entity ID')}
+              <EntityPicker
+                value={sourceEntity}
+                onChange={setSourceEntity}
+                localEntities={localEntities}
+                placeholder="e.g. P-1042"
+                aria-label="Source entity ID"
+              />
+            </div>
+            <div className="flex flex-col gap-1.5">
+              {labelFor('Target entity ID')}
+              <EntityPicker
+                value={targetEntity}
+                onChange={setTargetEntity}
+                localEntities={localEntities}
+                placeholder="e.g. O-233"
+                aria-label="Target entity ID"
+              />
+            </div>
+          </>
+        ) : (
+          <>
+            <TextField
+              label="Source entity ID"
+              value={sourceEntity}
+              onChange={(e) => setSourceEntity(e.target.value)}
+              placeholder="e.g. P-1042"
+              required
+            />
+            <TextField
+              label="Target entity ID"
+              value={targetEntity}
+              onChange={(e) => setTargetEntity(e.target.value)}
+              placeholder="e.g. O-233"
+              required
+            />
+          </>
+        )}
       </div>
 
       <div className="grid grid-cols-3 gap-3">
