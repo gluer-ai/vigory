@@ -1,6 +1,14 @@
 import { describe, expect, it } from 'vitest'
 import {
   addEdge,
+  addGraphMatch,
+  expandAround,
+  freeSpotsAround,
+  interleaveByRelation,
+  pickAutoMatch,
+  rankMatches,
+  searchTerms,
+  SANDBOX_MAX_NODES,
   addScenario,
   brokenLinksIfReclassified,
   addNewEntity,
@@ -366,5 +374,230 @@ describe('addScenario', () => {
     const base: SandboxDoc = { nodes: [], edges: [] }
     addScenario(base, ex())
     expect(base).toEqual({ nodes: [], edges: [] })
+  })
+})
+
+// ---- following connections ---------------------------------------------------------
+
+describe('expandAround', () => {
+  const ent = (id: string, label = id) => ({ entity_id: id, label, entity_subclass: 'LOCATION.Z' })
+  const lk = (id: string, a: string, b: string, type = 'adjacent_to'): Link => ({
+    link_id: id, link_type: type, source_entity: a, target_entity: b, direction: 'directed',
+    inverse_type: null, valid_from: null, valid_to: null, assertion_status: 'reported', confidence: 'B2', source_ref: '', attrs: {},
+  })
+  const start = (): SandboxDoc => ({ nodes: [node('C', 'ORGANIZATION.Y', { x: 100, y: 100 })], edges: [] })
+
+  it('copies connected entities around the clicked one and draws the real links', () => {
+    const r = expandAround(start(), 'C', [ent('C'), ent('A'), ent('B')], [lk('K1', 'C', 'A', 'owns'), lk('K2', 'B', 'C', 'owned_by')])
+    expect(r.added.sort()).toEqual(['A', 'B'])
+    expect([r.links, r.total, r.hidden, r.skippedLinks]).toEqual([2, 2, 0, 0])
+    expect(r.doc.nodes.filter((n) => n.id !== 'C').every((n) => n.origin === 'graph' && n.base?.label === n.label && n.parent === null)).toBe(true)
+    expect(r.doc.edges.map((e) => [e.id, e.source, e.target, e.link_type, e.origin, e.base_type]).sort()).toEqual([
+      ['K1', 'C', 'A', 'owns', 'graph', 'owns'],
+      ['K2', 'B', 'C', 'owned_by', 'graph', 'owned_by'],
+    ])
+    const pts = r.doc.nodes.map((n) => `${n.x},${n.y}`)
+    expect(new Set(pts).size).toBe(3) // nothing stacked
+  })
+
+  it('never overlaps nodes, even for a large fan-out next to existing entities', () => {
+    const many = Array.from({ length: 30 }, (_, i) => ent(`N${String(i).padStart(2, '0')}`))
+    const d: SandboxDoc = { nodes: [node('C', 'ORGANIZATION.Y', { x: 0, y: 0 }), node('E', 'PERSON.X', { x: 300, y: 0 })], edges: [] }
+    const r = expandAround(d, 'C', many, [], 30)
+    const ns = r.doc.nodes
+    for (let i = 0; i < ns.length; i++)
+      for (let j = i + 1; j < ns.length; j++)
+        expect(Math.abs(ns[i].x - ns[j].x) >= 240 || Math.abs(ns[i].y - ns[j].y) >= 110).toBe(true)
+  })
+
+  it('is repeatable: a second run adds only what is still missing', () => {
+    const first = expandAround(start(), 'C', [ent('A')], [lk('K1', 'C', 'A')])
+    const again = expandAround(first.doc, 'C', [ent('A'), ent('B')], [lk('K1', 'C', 'A'), lk('K2', 'C', 'B')])
+    expect(again.added).toEqual(['B'])
+    expect(again.links).toBe(1)
+    expect(expandAround(again.doc, 'C', [ent('A'), ent('B')], [lk('K1', 'C', 'A'), lk('K2', 'C', 'B')])).toMatchObject({ added: [], links: 0 })
+  })
+
+  it('follows the trail: expanding a neighbour continues from it', () => {
+    const one = expandAround(start(), 'C', [ent('A')], [lk('K1', 'C', 'A')])
+    const two = expandAround(one.doc, 'A', [ent('C'), ent('D')], [lk('K1', 'C', 'A'), lk('K3', 'A', 'D')])
+    expect(two.added).toEqual(['D'])
+    expect(two.links).toBe(1) // K1 already drawn, only K3 is new
+    const d = two.doc.nodes.find((n) => n.id === 'D')!
+    const a = two.doc.nodes.find((n) => n.id === 'A')!
+    expect(Math.hypot(d.x - a.x, d.y - a.y)).toBeGreaterThanOrEqual(255) // placed around A, not C
+  })
+
+  it('adds a batch at a time and reports the rest as hidden', () => {
+    const many = Array.from({ length: 45 }, (_, i) => ent(`N${String(i).padStart(2, '0')}`))
+    const links = many.map((e, i) => lk(`K${i}`, 'C', e.entity_id))
+    const r1 = expandAround(start(), 'C', many, links, 30)
+    expect([r1.added.length, r1.hidden, r1.total, r1.links]).toEqual([30, 15, 45, 30])
+    const r2 = expandAround(r1.doc, 'C', many, links, 30)
+    expect([r2.added.length, r2.hidden, r2.links]).toEqual([15, 0, 15])
+    expect(r2.added.every((id) => !r1.added.includes(id))).toBe(true)
+  })
+
+  it('never grows the canvas past the sandbox size limit', () => {
+    const filler = Array.from({ length: SANDBOX_MAX_NODES - 1 }, (_, i) => node(`F${i}`, 'PERSON.X'))
+    const full: SandboxDoc = { nodes: [node('C', 'ORGANIZATION.Y'), ...filler], edges: [] }
+    expect(full.nodes).toHaveLength(SANDBOX_MAX_NODES)
+    const r = expandAround(full, 'C', [ent('A'), ent('B')], [lk('K1', 'C', 'A')])
+    expect([r.added.length, r.hidden]).toEqual([0, 2])
+    expect(r.doc.nodes).toHaveLength(SANDBOX_MAX_NODES)
+  })
+
+  it('stays on the clicked entity\'s level and skips links to entities on other levels', () => {
+    const d: SandboxDoc = {
+      nodes: [node('box', 'ORGANIZATION.Y'), node('C', 'ORGANIZATION.Y', { parent: 'box' }), node('ELSE', 'LOCATION.Z')],
+      edges: [],
+    }
+    const r = expandAround(d, 'C', [ent('A'), ent('ELSE')], [lk('K1', 'C', 'A'), lk('K2', 'C', 'ELSE')])
+    expect(r.doc.nodes.find((n) => n.id === 'A')?.parent).toBe('box')
+    expect(r.doc.edges.map((e) => [e.id, e.parent])).toEqual([['K1', 'box']])
+    expect(r.skippedLinks).toBe(1)
+  })
+
+  it('links the clicked entity to neighbours that are already on its level', () => {
+    const d: SandboxDoc = { nodes: [node('C', 'ORGANIZATION.Y'), node('A', 'LOCATION.Z')], edges: [] }
+    const r = expandAround(d, 'C', [ent('A')], [lk('K1', 'C', 'A')])
+    expect([r.added.length, r.links]).toEqual([0, 1])
+  })
+
+  it('ignores a missing centre, self links, and duplicate links', () => {
+    const d = start()
+    expect(expandAround(d, 'GONE', [ent('A')], [])).toMatchObject({ doc: d, added: [] })
+    const r = expandAround(d, 'C', [ent('A')], [lk('K1', 'C', 'C'), lk('K2', 'C', 'A'), lk('K3', 'C', 'A')])
+    expect(r.links).toBe(1) // K3 is the same source/target/type as K2
+  })
+
+  it('leaves the input untouched', () => {
+    const d = start()
+    expandAround(d, 'C', [ent('A')], [lk('K1', 'C', 'A')])
+    expect(d.nodes).toHaveLength(1)
+    expect(d.edges).toHaveLength(0)
+  })
+})
+
+describe('matching a sandbox-only entity to the graph', () => {
+  it('tries the full name, then drops company suffixes, never below two words', () => {
+    expect(searchTerms('Lehman Brothers Holdings Inc.')).toEqual(['Lehman Brothers Holdings Inc.', 'Lehman Brothers Holdings', 'Lehman Brothers'])
+    expect(searchTerms('Acme, Inc.')).toEqual(['Acme Inc.']) // comma stripped; two words, so no shortening
+    expect(searchTerms('Barclays')).toEqual(['Barclays'])
+    expect(searchTerms('Richard Fuld')).toEqual(['Richard Fuld'])
+    expect(searchTerms('  ')).toEqual([])
+    expect(searchTerms('AB')).toEqual([]) // too short to search for
+  })
+
+  it('ranks the full name, then the name without company suffixes, then the closest in length', () => {
+    const found = [{ label: 'Lehman Brothers International (Europe)' }, { label: 'lehman brothers' }, { label: 'Lehman Brothers Inc' }]
+    expect(rankMatches('Lehman Brothers', found).map((e) => e.label)).toEqual([
+      'lehman brothers', 'Lehman Brothers Inc', 'Lehman Brothers International (Europe)',
+    ])
+  })
+
+  it('prefers "Lehman Brothers" over "Lehman Brothers International (Europe)" for a suffixed name', () => {
+    const found = [{ label: 'Lehman Brothers International (Europe)' }, { label: 'Lehman Brothers' }]
+    expect(rankMatches('Lehman Brothers Holdings Inc.', found).map((e) => e.label)).toEqual([
+      'Lehman Brothers', 'Lehman Brothers International (Europe)',
+    ])
+  })
+
+  const real = { entity_id: 'P-9', label: 'Lehman Brothers', entity_subclass: 'ORGANIZATION.Y' }
+  const base = (): SandboxDoc => ({ nodes: [node('N-1', 'ORGANIZATION.Y', { origin: 'new', base: null, x: 10, y: 20 })], edges: [] })
+
+  it('copies the real entity beside it and links them as the same entity', () => {
+    const d = addGraphMatch(base(), 'N-1', real, 'same_as')
+    const copy = d.nodes.find((n) => n.id === 'P-9')!
+    expect(copy).toMatchObject({ origin: 'graph', x: 290, y: 20, parent: null, base: { label: 'Lehman Brothers' } })
+    expect(d.edges).toHaveLength(1)
+    expect(d.edges[0]).toMatchObject({ origin: 'new', source: 'N-1', target: 'P-9', link_type: 'same_as', base_type: null, parent: null })
+  })
+
+  it('omits the link when the ontology has no such type, and refuses duplicates or a missing node', () => {
+    expect(addGraphMatch(base(), 'N-1', real, null).edges).toEqual([])
+    const once = addGraphMatch(base(), 'N-1', real, 'same_as')
+    expect(addGraphMatch(once, 'N-1', real, 'same_as')).toBe(once)
+    const b = base()
+    expect(addGraphMatch(b, 'GONE', real, 'same_as')).toBe(b)
+  })
+})
+
+describe('freeSpotsAround', () => {
+  it('returns the requested number of distinct spots, all clear of existing nodes', () => {
+    const spots = freeSpotsAround({ x: 0, y: 0 }, [{ x: 0, y: 0 }, { x: 0, y: -300 }], 25)
+    expect(spots).toHaveLength(25)
+    expect(new Set(spots.map((s) => `${s.x},${s.y}`)).size).toBe(25)
+    expect(spots.every((s) => Math.abs(s.x) >= 240 || Math.abs(s.y) >= 110)).toBe(true)
+    expect(spots.every((s) => Math.abs(s.x) >= 240 || Math.abs(s.y + 300) >= 110)).toBe(true)
+  })
+  it('starts close to the centre and moves outward only when needed', () => {
+    const few = freeSpotsAround({ x: 0, y: 0 }, [], 3)
+    expect(few.every((s) => Math.hypot(s.x, s.y) < 310)).toBe(true)
+    const many = freeSpotsAround({ x: 0, y: 0 }, [], 60)
+    expect(Math.max(...many.map((s) => Math.hypot(s.x, s.y)))).toBeGreaterThan(500)
+  })
+})
+
+describe('pickAutoMatch', () => {
+  const f = (...labels: string[]) => labels.map((label) => ({ label }))
+  it('adopts a single exact name match, ignoring case and company suffixes', () => {
+    expect(pickAutoMatch('Lehman Brothers Holdings Inc.', f('Lehman Brothers', 'Lehman Brothers International (Europe)'))?.label).toBe('Lehman Brothers')
+    expect(pickAutoMatch('barclays', f('Barclays', 'Barclays Capital'))?.label).toBe('Barclays')
+  })
+  it('does not guess when the match is fuzzy, ambiguous or absent', () => {
+    expect(pickAutoMatch('Lehman', f('Lehman Brothers', 'Lehman Subsidiary'))).toBeNull() // only similar
+    expect(pickAutoMatch('Acme', f('Acme', 'ACME'))).toBeNull() // two equally exact
+    expect(pickAutoMatch('Acme', [])).toBeNull()
+  })
+})
+
+describe('interleaveByRelation', () => {
+  const e = (id: string, label = id) => ({ entity_id: id, label })
+  const link = (id: string, type: string, other: string) => ({ link_type: type, source_entity: 'C', target_entity: other, link_id: id })
+
+  it('puts one of each kind of relation first, rarest kinds first, then round-robins', () => {
+    const subs = Array.from({ length: 6 }, (_, i) => e(`S${i}`, `Sub ${i}`))
+    const ents = [...subs, e('HQ', 'New York'), e('CEO', 'Fuld'), e('REG', 'SEC')]
+    const links = [...subs.map((s) => link(`k${s.entity_id}`, 'subsidiary_of', s.entity_id)),
+      link('a', 'headquartered_in', 'HQ'), link('b', 'commands', 'CEO'), link('c', 'regulated_by', 'REG')]
+    const order = interleaveByRelation(ents, 'C', links).map((x) => x.entity_id)
+    expect(order.slice(0, 4).sort()).toEqual(['CEO', 'HQ', 'REG', 'S0']) // a sample of every relation in the first batch
+    expect(order.slice(4)).toEqual(['S1', 'S2', 'S3', 'S4', 'S5']) // then the long tail, in name order
+    expect(order).toHaveLength(9)
+  })
+
+  it('is deterministic and keeps every entity exactly once', () => {
+    const ents = [e('B', 'b'), e('A', 'a'), e('Z', 'z')]
+    const links = [link('1', 'x', 'B'), link('2', 'y', 'A'), link('3', 'x', 'Z')]
+    const one = interleaveByRelation(ents, 'C', links).map((x) => x.entity_id)
+    expect(interleaveByRelation([...ents].reverse(), 'C', links).map((x) => x.entity_id)).toEqual(one)
+    expect([...one].sort()).toEqual(['A', 'B', 'Z'])
+  })
+
+  it('treats a link in either direction as the same relation, and unknown ones as one group', () => {
+    const ents = [e('A', 'a'), e('B', 'b'), e('X', 'x')]
+    const links = [{ link_type: 'owns', source_entity: 'A', target_entity: 'C', link_id: '1' }, link('2', 'owns', 'B')]
+    expect(interleaveByRelation(ents, 'C', links).map((x) => x.entity_id)).toEqual(['X', 'A', 'B'])
+  })
+})
+
+describe('a hub with many relations of one kind', () => {
+  it('shows its rarer relations in the first batch', () => {
+    const lk = (id: string, a: string, b: string, type: string): Link => ({
+      link_id: id, link_type: type, source_entity: a, target_entity: b, direction: 'directed',
+      inverse_type: null, valid_from: null, valid_to: null, assertion_status: 'reported', confidence: 'B2', source_ref: '', attrs: {},
+    })
+    const subs = Array.from({ length: 40 }, (_, i) => ({ entity_id: `S${i}`, label: `Lehman Subsidiary ${String(i).padStart(2, '0')}`, entity_subclass: 'ORGANIZATION.Y' }))
+    const rare = [
+      { entity_id: 'NYC', label: 'New York City', entity_subclass: 'LOCATION.Z' },
+      { entity_id: 'FULD', label: 'Richard Fuld', entity_subclass: 'PERSON.X' },
+      { entity_id: 'SEC', label: 'Securities and Exchange Commission', entity_subclass: 'ORGANIZATION.Y' },
+    ]
+    const links = [...subs.map((s) => lk(`k${s.entity_id}`, s.entity_id, 'C', 'subsidiary_of')), lk('a', 'C', 'NYC', 'headquartered_in'), lk('b', 'FULD', 'C', 'commands'), lk('c', 'C', 'SEC', 'regulated_by')]
+    const r = expandAround({ nodes: [node('C', 'ORGANIZATION.Y')], edges: [] }, 'C', [...subs, ...rare], links, 30)
+    expect(r.added).toHaveLength(30)
+    expect(['NYC', 'FULD', 'SEC'].every((id) => r.added.includes(id))).toBe(true)
+    expect(r.hidden).toBe(13)
   })
 })

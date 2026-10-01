@@ -17,16 +17,24 @@ import {
   ChevronRight,
   CornerUpLeft,
   FlaskConical,
+  Maximize,
   Maximize2,
+  Minimize,
+  PanelLeftClose,
+  PanelLeftOpen,
+  PanelRightClose,
+  PanelRightOpen,
   Plus,
   Search,
   ShieldCheck,
   Trash2,
 } from 'lucide-react'
-import { Fragment, useCallback, useEffect, useMemo, useRef, useState, type DragEvent } from 'react'
+import { Fragment, useCallback, useContext, useEffect, useMemo, useRef, useState, type DragEvent } from 'react'
 import { api, ApiError } from '../../lib/api'
+import { isWide, RailContext, usePersistedFlag } from '../../lib/panelState'
 import {
   addEdge,
+  addGraphMatch,
   addNewEntity,
   addScenario,
   brokenLinksIfReclassified,
@@ -34,13 +42,17 @@ import {
   containerExists,
   copyEntityIntoSandbox,
   edgeStatus,
+  expandAround,
   explodeInto,
   levelOf,
+  rankMatches,
   nodeStatus,
+  pickAutoMatch,
   pathTo,
   removeEdge,
   removeNode,
   revertNode,
+  searchTerms,
   summarize,
   updateEdge,
   updateNode,
@@ -113,6 +125,7 @@ export function SandboxPage({ ingestOpen, onIngestOpenChange }: SandboxPageProps
   // by "Ingest scenario") returns to the sandbox you were working in.
   const [activeId, setActiveIdState] = useState<string | null>(() => sessionStorage.getItem(ACTIVE_KEY))
   const [adder, setAdder] = useState<Adder | null>(null)
+  const [listCollapsed, setListCollapsed] = usePersistedFlag('sandbox.list.collapsed', false)
   const [classes, setClasses] = useState<ClassDef[]>([])
   const [linkDefs, setLinkDefs] = useState<LinkDef[]>([])
 
@@ -175,6 +188,8 @@ export function SandboxPage({ ingestOpen, onIngestOpenChange }: SandboxPageProps
   return (
     <div className="flex h-full min-h-0 w-full">
       <SandboxList
+        collapsed={listCollapsed}
+        onToggle={() => setListCollapsed(!listCollapsed)}
         list={list}
         error={listError}
         activeId={activeId}
@@ -197,6 +212,8 @@ export function SandboxPage({ ingestOpen, onIngestOpenChange }: SandboxPageProps
             linkDefs={linkDefs}
             onSaved={refreshList}
             onAdderChange={setAdder}
+            listCollapsed={listCollapsed}
+            onListCollapsedChange={setListCollapsed}
           />
         </ReactFlowProvider>
       ) : (
@@ -218,9 +235,34 @@ export function SandboxPage({ ingestOpen, onIngestOpenChange }: SandboxPageProps
   )
 }
 
+/** Small icon button for collapsing/expanding a side panel. */
+function PanelToggle(props: {
+  label: string
+  expanded: boolean
+  onClick: () => void
+  controls?: string
+  children: React.ReactNode
+}) {
+  return (
+    <button
+      type="button"
+      onClick={props.onClick}
+      aria-label={props.label}
+      aria-expanded={props.expanded}
+      aria-controls={props.controls}
+      title={props.label}
+      className="rounded-md p-1.5 text-[var(--color-text-muted)] hover:bg-[var(--color-surface-hover)] hover:text-[var(--color-text-primary)]"
+    >
+      {props.children}
+    </button>
+  )
+}
+
 // ---- left: your sandboxes ----------------------------------------------------
 
 function SandboxList(props: {
+  collapsed: boolean
+  onToggle: () => void
   list: SandboxSummary[]
   error: string
   activeId: string | null
@@ -263,16 +305,37 @@ function SandboxList(props: {
     }
   }
 
+  if (props.collapsed) {
+    return (
+      <aside
+        aria-label="Your sandboxes (hidden)"
+        className="flex w-10 shrink-0 flex-col items-center gap-2 border-e border-[var(--color-border)] py-2"
+      >
+        <PanelToggle label="Show your sandboxes" expanded={false} onClick={props.onToggle}>
+          <PanelLeftOpen size={16} aria-hidden="true" />
+        </PanelToggle>
+        <FlaskConical size={14} className="text-[var(--color-text-muted)]" aria-hidden="true" />
+        <span className="text-[10px] text-[var(--color-text-muted)]" aria-hidden="true">{props.list.length}</span>
+      </aside>
+    )
+  }
+
   return (
     <aside
+      id="sandbox-list"
       className="flex w-60 shrink-0 flex-col gap-3 overflow-y-auto border-e border-[var(--color-border)] p-3"
       aria-label="Your sandboxes"
     >
-      <div className="flex items-center justify-between">
+      <div className="flex items-center justify-between gap-2">
         <h2 className="text-sm font-semibold text-[var(--color-text-primary)]">Your sandboxes</h2>
-        <Button onClick={() => setCreating((v) => !v)} aria-expanded={creating}>
-          <Plus size={14} aria-hidden="true" /> New
-        </Button>
+        <div className="flex items-center gap-1">
+          <Button onClick={() => setCreating((v) => !v)} aria-expanded={creating}>
+            <Plus size={14} aria-hidden="true" /> New
+          </Button>
+          <PanelToggle label="Hide your sandboxes" expanded onClick={props.onToggle} controls="sandbox-list">
+            <PanelLeftClose size={16} aria-hidden="true" />
+          </PanelToggle>
+        </div>
       </div>
       <p className="flex items-start gap-1.5 text-xs text-[var(--color-text-muted)]">
         <ShieldCheck size={14} className="mt-0.5 shrink-0 text-[var(--color-focus)]" aria-hidden="true" />
@@ -361,7 +424,11 @@ function Editor({
   linkDefs,
   onSaved,
   onAdderChange,
+  listCollapsed,
+  onListCollapsedChange,
 }: {
+  listCollapsed: boolean
+  onListCollapsedChange: (collapsed: boolean) => void
   sandboxId: string
   classes: ClassDef[]
   linkDefs: LinkDef[]
@@ -371,12 +438,27 @@ function Editor({
 }) {
   const { doc, getDoc, name, loadState, saveState, message, edit, rename, retry, reload } =
     useSandbox(sandboxId)
-  const { screenToFlowPosition } = useReactFlow()
+  const { screenToFlowPosition, fitView } = useReactFlow()
   const [selected, setSelected] = useState<Selection>(null)
   const [pending, setPending] = useState<{ source: string; target: string } | null>(null)
   const [notice, setNotice] = useState('')
   const [container, setContainer] = useState<string | null>(null)
   const [exploding, setExploding] = useState(false)
+  const [expanding, setExpanding] = useState<string | null>(null)
+  const [fitPending, setFitPending] = useState(false)
+  const [toolsCollapsed, setToolsCollapsed] = usePersistedFlag('sandbox.tools.collapsed', false)
+  const rail = useContext(RailContext)
+  const wide = isWide([rail.collapsed, listCollapsed, toolsCollapsed])
+
+  /** One click to hide (or restore) every side panel around the canvas. */
+  function toggleWide() {
+    const next = !wide
+    rail.setCollapsed(next)
+    onListCollapsedChange(next)
+    setToolsCollapsed(next)
+    // Once the canvas has its new width, fit the drawing to it.
+    setTimeout(() => void fitView({ duration: 300, padding: 0.15 }), 300)
+  }
   const wrapper = useRef<HTMLDivElement>(null)
 
   // Keep the list's counts fresh once a save lands.
@@ -453,6 +535,16 @@ function Editor({
       }))
     })
   }, [level.nodes, doc, selected, setRfNodes])
+  // After an expansion, zoom to show everything - but only once React Flow has
+  // measured the new nodes, or it would fit to the old layout.
+  useEffect(() => {
+    if (!fitPending || rfNodes.length === 0) return
+    if (rfNodes.every((n) => n.measured?.width)) {
+      void fitView({ duration: 300, padding: 0.15 })
+      setFitPending(false)
+    }
+  }, [fitPending, rfNodes, fitView])
+
   const rfEdges: Edge<RelationEdgeData>[] = useMemo(
     () =>
       level.edges.map((e) => ({
@@ -548,6 +640,99 @@ function Editor({
     [edit, nodeById, here],
   )
 
+  /** Follow an entity's connections in the knowledge graph: copy the connected entities
+   * around it and draw the real links. Click again (or "Show more") to keep going. */
+  const expand = useCallback(
+    async (nodeId: string, limit?: number) => {
+      const start = getDoc().nodes.find((n) => n.id === nodeId)
+      if (!start || start.origin !== 'graph') return
+      setExpanding(nodeId)
+      try {
+        const scope = await api.getScope(nodeId, 1)
+        // Read the canvas again after the wait: the user (or the assistant) may have edited it.
+        const result = expandAround(getDoc(), nodeId, scope.nodes, scope.edges, limit)
+        if (result.added.length > 0 || result.links > 0) edit(() => result.doc)
+        if (result.added.length > 0) setFitPending(true) // zoom out to show them once laid out
+        const bits: string[] = []
+        if (result.added.length > 0)
+          bits.push(`Added ${result.added.length} connected ${result.added.length === 1 ? 'entity' : 'entities'}`)
+        if (result.links > 0) bits.push(`${result.links} ${result.links === 1 ? 'link' : 'links'}`)
+        const shown = result.total - result.hidden
+        setNotice(
+          result.total === 0
+            ? `"${start.label}" has no connections in the knowledge graph.`
+            : bits.length > 0
+              ? `${bits.join(', ')}. ${
+                  result.hidden > 0
+                    ? `${result.hidden} more connected — click it again or use Show more.`
+                    : `Showing all ${result.total} connected.`
+                }`
+              : result.hidden > 0
+                ? `Canvas is full — ${result.hidden} connected entities not shown. Remove some to make room.`
+                : `Already showing all ${shown} connected. Click one of them to keep going.`,
+        )
+      } catch (err) {
+        setNotice(err instanceof ApiError ? err.message : 'Could not look up connections')
+      } finally {
+        setExpanding(null)
+      }
+    },
+    [getDoc, edit],
+  )
+
+  /** The user confirmed that a sandbox-only entity is this knowledge-graph entity. */
+  const adoptMatch = useCallback(
+    (newNodeId: string, entity: Entity) => {
+      const from = getDoc().nodes.find((n) => n.id === newNodeId)
+      if (!from) return
+      const types = validLinkTypes(linkDefs, from.entity_subclass, entity.entity_subclass, classes)
+      const linkType = types.some((t) => t.type === 'same_as') ? 'same_as' : null
+      edit((d) => addGraphMatch(d, newNodeId, entity, linkType))
+      setSelected({ kind: 'node', id: entity.entity_id })
+      void expand(entity.entity_id)
+    },
+    [getDoc, edit, linkDefs, classes, expand],
+  )
+
+  /** Click on a sandbox-only entity: look it up in the graph. An unambiguous exact name
+   * match is adopted (as a visible, deletable "same as" hypothesis) and its connections
+   * followed; anything else is left to the side panel, where the user picks. */
+  const followNew = useCallback(
+    async (nodeId: string) => {
+      const from = getDoc().nodes.find((n) => n.id === nodeId)
+      if (!from || from.origin !== 'new') return
+      setExpanding(nodeId)
+      try {
+        const seen = new Map<string, Entity>()
+        for (const term of searchTerms(from.label)) {
+          for (const e of await api.searchEntities(term)) seen.set(e.entity_id, e)
+        }
+        const found = rankMatches(from.label, [...seen.values()])
+        const pick = pickAutoMatch(from.label, found)
+        if (pick) {
+          if (getDoc().nodes.some((n) => n.id === pick.entity_id)) {
+            setExpanding(null)
+            void expand(pick.entity_id) // matched before: just keep following it
+          } else {
+            adoptMatch(nodeId, pick)
+          }
+          return
+        }
+        if (found.length > 0) setToolsCollapsed(false) // the user has to pick: show where
+        setNotice(
+          found.length === 0
+            ? `"${from.label}" is not in the knowledge graph, so there are no connections to follow.`
+            : `${found.length} possible ${found.length === 1 ? 'match' : 'matches'} for "${from.label}" - pick one in the side panel.`,
+        )
+      } catch (err) {
+        setNotice(err instanceof ApiError ? err.message : 'Could not look up the knowledge graph')
+      } finally {
+        setExpanding(null)
+      }
+    },
+    [getDoc, expand, adoptMatch, setToolsCollapsed],
+  )
+
   const explode = useCallback(
     async (nodeId: string) => {
       setExploding(true)
@@ -620,6 +805,11 @@ function Editor({
           >
             {SAVE_LABEL[saveState]}
           </span>
+          <span className="flex-1" />
+          <Button onClick={toggleWide} aria-pressed={wide} title={wide ? 'Show the side panels again' : 'Hide the side panels to widen the canvas'}>
+            {wide ? <Minimize size={14} aria-hidden="true" /> : <Maximize size={14} aria-hidden="true" />}
+            {wide ? 'Show panels' : 'Wide canvas'}
+          </Button>
           {(counts.newEntities + counts.editedEntities + counts.newLinks + counts.editedLinks > 0) && (
             <span className="text-xs text-[var(--color-text-muted)]">
               {[
@@ -710,6 +900,12 @@ function Editor({
             onNodeClick={(_, n) => {
               setSelected({ kind: 'node', id: n.id })
               setPending(null)
+              // Clicking ANY entity follows its connections (again on every click): a copied
+              // graph entity directly, a sandbox-only one by first finding it in the graph.
+              if (expanding !== null) return
+              const origin = nodeById.get(n.id)?.origin
+              if (origin === 'graph') void expand(n.id)
+              else if (origin === 'new') void followNew(n.id)
             }}
             onEdgeClick={(_, e) => {
               setSelected({ kind: 'edge', id: e.id })
@@ -738,7 +934,30 @@ function Editor({
         />
       </section>
 
-      <aside className="flex w-72 shrink-0 flex-col gap-4 overflow-y-auto border-s border-[var(--color-border)] p-3" aria-label="Sandbox tools">
+      {toolsCollapsed ? (
+        <aside
+          aria-label="Sandbox tools (hidden)"
+          className="flex w-10 shrink-0 flex-col items-center gap-2 border-s border-[var(--color-border)] py-2"
+        >
+          <PanelToggle label="Show sandbox tools" expanded={false} onClick={() => setToolsCollapsed(false)}>
+            <PanelRightOpen size={16} aria-hidden="true" />
+          </PanelToggle>
+          {selected && (
+            <span
+              role="img"
+              aria-label="Something is selected: open the tools to edit it"
+              title="Something is selected: open the tools to edit it"
+              className="h-2 w-2 rounded-full bg-[var(--color-focus)]"
+            />
+          )}
+        </aside>
+      ) : (
+      <aside id="sandbox-tools" className="flex w-72 shrink-0 flex-col gap-4 overflow-y-auto border-s border-[var(--color-border)] p-3" aria-label="Sandbox tools">
+        <div className="-mb-2 flex justify-end">
+          <PanelToggle label="Hide sandbox tools" expanded onClick={() => setToolsCollapsed(true)} controls="sandbox-tools">
+            <PanelRightClose size={16} aria-hidden="true" />
+          </PanelToggle>
+        </div>
         <AddPanel
           classes={classes}
           onAddExisting={(entity) => addExisting(entity, viewportCentre())}
@@ -772,6 +991,11 @@ function Editor({
             onOpen={() => go(selNode.id)}
             onExplode={selNode.origin === 'graph' ? () => void explode(selNode.id) : undefined}
             exploding={exploding}
+            onExpand={selNode.origin === 'graph' ? () => void expand(selNode.id) : undefined}
+            onShowMore={selNode.origin === 'graph' ? () => void expand(selNode.id) : undefined}
+            expanding={expanding === selNode.id}
+            onUseMatch={(entity) => adoptMatch(selNode.id, entity)}
+            existingIds={new Set(doc.nodes.map((n) => n.id))}
             onChange={(patch) => edit((d) => updateNode(d, selNode.id, patch))}
             onRevert={() => edit((d) => revertNode(d, selNode.id))}
             onRemove={() => {
@@ -804,6 +1028,7 @@ function Editor({
           </p>
         )}
       </aside>
+      )}
     </>
   )
 }
@@ -959,7 +1184,8 @@ function ConnectPanel({
 }
 
 function NodePanel({
-  node, doc, classes, linkDefs, inside, onOpen, onExplode, exploding, onChange, onRevert, onRemove,
+  node, doc, classes, linkDefs, inside, onOpen, onExplode, exploding, onExpand, onShowMore, expanding,
+  onUseMatch, existingIds, onChange, onRevert, onRemove,
 }: {
   node: SandboxNodeData
   doc: SandboxDoc
@@ -969,6 +1195,11 @@ function NodePanel({
   onOpen: () => void
   onExplode?: () => void
   exploding: boolean
+  onExpand?: () => void
+  onShowMore?: () => void
+  expanding: boolean
+  onUseMatch: (entity: Entity) => void
+  existingIds: Set<string>
   onChange: (patch: Partial<SandboxNodeData>) => void
   onRevert: () => void
   onRemove: () => void
@@ -1009,6 +1240,26 @@ function NodePanel({
       <Select aria-label="Class" value={node.entity_subclass} onValueChange={reclassify} options={options} />
       {blocked && <p role="alert" className="text-xs text-[var(--color-status-destroyed)]">{blocked}</p>}
       {node.origin === 'graph' && <p className="font-mono text-xs text-[var(--color-text-muted)]">Copy of {node.id}</p>}
+      {onExpand && (
+        <div className="flex flex-col gap-1.5 rounded-md border border-[var(--color-border)] p-2">
+          <span className="text-xs text-[var(--color-text-muted)]">
+            Click this entity on the canvas to follow its connections in the knowledge graph.
+          </span>
+          <div className="flex gap-2">
+            <Button onClick={onExpand} disabled={expanding}>
+              {expanding ? 'Looking up…' : 'Show connections'}
+            </Button>
+            {onShowMore && (
+              <Button onClick={onShowMore} disabled={expanding}>
+                Show more
+              </Button>
+            )}
+          </div>
+        </div>
+      )}
+      {node.origin === 'new' && (
+        <GraphMatches label={node.label} existingIds={existingIds} onUse={onUseMatch} />
+      )}
       <OpenInside inside={inside} onOpen={onOpen} onExplode={onExplode} exploding={exploding} />
       <div className="flex gap-2">
         {status === 'edited' && <Button onClick={onRevert}>Revert</Button>}
@@ -1018,6 +1269,81 @@ function NodePanel({
         <p className="text-xs text-[var(--color-text-muted)]">
           Removing this also removes the {inside} item{inside > 1 ? 's' : ''} inside it.
         </p>
+      )}
+    </div>
+  )
+}
+
+/** For a sandbox-only entity: find entities in the knowledge graph that may be the same
+ * thing, so its connections can be followed. Nothing is merged automatically - the
+ * user picks a match, which is added next to it (and linked) as a hypothesis. */
+function GraphMatches(props: {
+  label: string
+  existingIds: Set<string>
+  onUse: (entity: Entity) => void
+}) {
+  const [state, setState] = useState<'loading' | 'ready' | 'error'>('loading')
+  const [matches, setMatches] = useState<Entity[]>([])
+
+  useEffect(() => {
+    let cancelled = false
+    setState('loading')
+    ;(async () => {
+      try {
+        const seen = new Map<string, Entity>()
+        for (const term of searchTerms(props.label)) {
+          for (const e of await api.searchEntities(term)) seen.set(e.entity_id, e)
+          if (seen.size >= 5) break
+        }
+        if (!cancelled) {
+          setMatches(rankMatches(props.label, [...seen.values()]).slice(0, 5))
+          setState('ready')
+        }
+      } catch {
+        if (!cancelled) setState('error')
+      }
+    })()
+    return () => {
+      cancelled = true
+    }
+  }, [props.label])
+
+  return (
+    <div className="flex flex-col gap-1.5 rounded-md border border-[var(--color-border)] p-2">
+      <span className="text-xs font-medium text-[var(--color-text-primary)]">In the knowledge graph</span>
+      {state === 'loading' && <span className="text-xs text-[var(--color-text-muted)]">Searching…</span>}
+      {state === 'error' && <span role="alert" className="text-xs text-[var(--color-status-destroyed)]">Search failed.</span>}
+      {state === 'ready' && matches.length === 0 && (
+        <span className="text-xs text-[var(--color-text-muted)]">
+          No entity with a similar name, so there are no connections to follow. Add links yourself, or ask the assistant.
+        </span>
+      )}
+      {state === 'ready' && matches.length > 0 && (
+        <>
+          <span className="text-xs text-[var(--color-text-muted)]">
+            Is it one of these? Pick one to add it here and see what it is connected to.
+          </span>
+          <ul aria-label="Knowledge graph matches" className="flex flex-col gap-1">
+            {matches.map((m) => {
+              const there = props.existingIds.has(m.entity_id)
+              return (
+                <li key={m.entity_id}>
+                  <button
+                    type="button"
+                    disabled={there}
+                    onClick={() => props.onUse(m)}
+                    className="w-full rounded border border-[var(--color-border)] px-2 py-1 text-start text-xs hover:border-[var(--color-focus)] disabled:opacity-50"
+                  >
+                    <span className="block truncate text-[var(--color-text-primary)]">{m.label}</span>
+                    <span className="block truncate text-[var(--color-text-muted)]">
+                      {there ? 'Already on the canvas' : m.entity_subclass}
+                    </span>
+                  </button>
+                </li>
+              )
+            })}
+          </ul>
+        </>
       )}
     </div>
   )

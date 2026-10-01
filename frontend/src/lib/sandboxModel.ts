@@ -387,3 +387,263 @@ export function addScenario(
   }
   return { doc: { nodes, edges }, entities: extract.entities.length, copied, links, skippedLinks }
 }
+
+// ---- follow connections from the knowledge graph ------------------------------------
+
+// Mirror the server's per-sandbox limits so an expansion can never make a canvas the
+// server would refuse to save.
+export const SANDBOX_MAX_NODES = 300
+export const SANDBOX_MAX_EDGES = 1000
+/** Connected entities added per click; "Show more" adds the next batch. */
+export const EXPAND_BATCH = 30
+
+type GraphEntity = Pick<Entity, 'entity_id' | 'label' | 'entity_subclass'>
+
+export interface Expansion {
+  doc: SandboxDoc
+  /** ids of the entities this expansion put on the canvas */
+  added: string[]
+  /** links added (all touch the expanded entity) */
+  links: number
+  /** connected entities in the graph, excluding the expanded one */
+  total: number
+  /** connected entities not shown yet (batch / canvas size limit) */
+  hidden: number
+  /** links not drawn because the other end sits on a different level */
+  skippedLinks: number
+}
+
+const NODE_W = 240
+const NODE_H = 110
+
+/** `count` positions on concentric rings around `center`, skipping any spot that would
+ * overlap an entity already on the level (or one placed earlier in this call). Rings
+ * are sized to the node width, so a big fan-out spreads outward instead of stacking. */
+export function freeSpotsAround(
+  center: { x: number; y: number },
+  existing: { x: number; y: number }[],
+  count: number,
+): { x: number; y: number }[] {
+  const taken = existing.map((n) => ({ x: n.x, y: n.y }))
+  const hits = (x: number, y: number) =>
+    taken.some((t) => Math.abs(t.x - x) < NODE_W && Math.abs(t.y - y) < NODE_H)
+  const out: { x: number; y: number }[] = []
+  for (let ring = 0; out.length < count && ring < 40; ring++) {
+    const radius = 300 + ring * 230
+    const slots = Math.max(6, Math.floor((2 * Math.PI * radius) / (NODE_W + 20)))
+    const offset = ring % 2 === 0 ? 0 : Math.PI / slots // stagger alternate rings
+    for (let k = 0; k < slots && out.length < count; k++) {
+      const angle = -Math.PI / 2 + offset + (2 * Math.PI * k) / slots
+      const x = Math.round(center.x + radius * Math.cos(angle))
+      const y = Math.round(center.y + radius * Math.sin(angle))
+      if (hits(x, y)) continue
+      taken.push({ x, y })
+      out.push({ x, y })
+    }
+  }
+  // Pathological fallback (a huge crowded canvas): stack remaining ones far below.
+  while (out.length < count) out.push({ x: center.x, y: center.y + 4000 + out.length * NODE_H })
+  return out
+}
+
+/** Order connected entities so any batch is a fair sample: one of each kind of relation
+ * first (rarest kinds first), then round-robin. Without this, an entity with 40
+ * "subsidiary_of" links would bury its single headquarters, CEO and regulator behind
+ * the subsidiaries. Within a kind, alphabetical. Deterministic. */
+export function interleaveByRelation<T extends { entity_id: string; label: string }>(
+  entities: T[],
+  centerId: string,
+  realLinks: Pick<Link, 'link_type' | 'source_entity' | 'target_entity'>[],
+): T[] {
+  const kindOf = new Map<string, string>()
+  for (const l of realLinks) {
+    const other = l.source_entity === centerId ? l.target_entity : l.target_entity === centerId ? l.source_entity : null
+    if (other && !kindOf.has(other)) kindOf.set(other, l.link_type)
+  }
+  const groups = new Map<string, T[]>()
+  for (const e of entities) {
+    const k = kindOf.get(e.entity_id) ?? ''
+    groups.set(k, [...(groups.get(k) ?? []), e])
+  }
+  const ordered = [...groups.entries()]
+    .map(([kind, list]) => ({ kind, list: [...list].sort((a, b) => a.label.localeCompare(b.label)) }))
+    .sort((a, b) => a.list.length - b.list.length || a.kind.localeCompare(b.kind))
+  const out: T[] = []
+  for (let round = 0; ordered.some((g) => round < g.list.length); round++) {
+    for (const g of ordered) if (round < g.list.length) out.push(g.list[round])
+  }
+  return out
+}
+
+/** Show an entity's real connections on its own level: each connected entity not
+ * already in the sandbox is copied in around it (up to `limit`), and the real links
+ * between it and anything on this level are drawn. Pure; the real graph is only read
+ * by the caller to produce `neighbours` / `realLinks`. Running it again only adds
+ * what is still missing, which is what makes "click to keep going" safe. */
+export function expandAround(
+  doc: SandboxDoc,
+  centerId: string,
+  neighbours: GraphEntity[],
+  realLinks: Link[],
+  limit: number = EXPAND_BATCH,
+): Expansion {
+  const none: Expansion = { doc, added: [], links: 0, total: 0, hidden: 0, skippedLinks: 0 }
+  const center = doc.nodes.find((n) => n.id === centerId)
+  if (!center) return none
+  const level = center.parent ?? null
+
+  const byId = new Map(doc.nodes.map((n) => [n.id, n]))
+  const others = neighbours.filter((e) => e.entity_id !== centerId)
+  const fresh = interleaveByRelation(
+    others.filter((e) => !byId.has(e.entity_id)),
+    centerId,
+    realLinks,
+  )
+  const room = Math.max(0, Math.min(limit, SANDBOX_MAX_NODES - doc.nodes.length))
+  const toAdd = fresh.slice(0, room)
+
+  const spots = freeSpotsAround(center, level === null ? doc.nodes.filter((n) => n.parent == null) : doc.nodes.filter((n) => n.parent === level), toAdd.length)
+  const added: SandboxNodeData[] = toAdd.map((e, i) => ({
+    id: e.entity_id,
+    origin: 'graph',
+    label: e.label,
+    entity_subclass: e.entity_subclass,
+    x: spots[i].x,
+    y: spots[i].y,
+    base: { label: e.label, entity_subclass: e.entity_subclass },
+    parent: level,
+  }))
+
+  const onLevel = new Set([
+    ...doc.nodes.filter((n) => (n.parent ?? null) === level).map((n) => n.id),
+    ...added.map((n) => n.id),
+  ])
+  const taken = new Set([...doc.nodes.map((n) => n.id), ...doc.edges.map((e) => e.id), ...added.map((n) => n.id)])
+  const edges = [...doc.edges]
+  let links = 0
+  let skippedLinks = 0
+  for (const l of realLinks) {
+    const other =
+      l.source_entity === centerId ? l.target_entity : l.target_entity === centerId ? l.source_entity : null
+    if (other === null || other === centerId) continue
+    if (!onLevel.has(other)) {
+      if (byId.has(other)) skippedLinks += 1 // exists, but on another level
+      continue // otherwise it is a not-yet-shown neighbour: drawn once that one is added
+    }
+    const duplicate = edges.some(
+      (x) =>
+        x.source === l.source_entity &&
+        x.target === l.target_entity &&
+        x.link_type === l.link_type &&
+        (x.parent ?? null) === level,
+    )
+    if (taken.has(l.link_id) || duplicate || edges.length >= SANDBOX_MAX_EDGES) continue
+    taken.add(l.link_id)
+    edges.push({
+      id: l.link_id,
+      origin: 'graph',
+      source: l.source_entity,
+      target: l.target_entity,
+      link_type: l.link_type,
+      base_type: l.link_type,
+      parent: level,
+    })
+    links += 1
+  }
+
+  return {
+    doc: { nodes: [...doc.nodes, ...added], edges },
+    added: added.map((n) => n.id),
+    links,
+    total: others.length,
+    hidden: fresh.length - toAdd.length,
+    skippedLinks,
+  }
+}
+
+const NAME_SUFFIXES = new Set([
+  'inc', 'inc.', 'ltd', 'ltd.', 'llc', 'plc', 'corp', 'corp.', 'corporation', 'co', 'co.',
+  'company', 'holdings', 'holding', 'group', 'ag', 'sa', 'gmbh', 'limited',
+])
+
+/** Names to try when looking for a sandbox-only entity in the graph, most specific
+ * first: "Lehman Brothers Holdings Inc." -> that, "Lehman Brothers Holdings",
+ * "Lehman Brothers". Never shorter than two words, so it cannot degrade to "Lehman". */
+export function searchTerms(label: string): string[] {
+  const words = label.trim().split(/\s+/).map((w) => w.replace(/,+$/, '')).filter(Boolean)
+  const terms: string[] = []
+  const push = (w: string[]) => {
+    const t = w.join(' ')
+    if (t.length >= 3 && !terms.some((x) => x.toLowerCase() === t.toLowerCase())) terms.push(t)
+  }
+  push(words)
+  let w = words
+  while (w.length > 2 && NAME_SUFFIXES.has(w[w.length - 1].toLowerCase())) {
+    w = w.slice(0, -1)
+    push(w)
+  }
+  return terms
+}
+
+/** Best candidates first: the full name, then the name without company suffixes
+ * ("Lehman Brothers Holdings Inc." -> "Lehman Brothers"), then the closest in length. */
+export function rankMatches<T extends { label: string }>(label: string, found: T[]): T[] {
+  const terms = searchTerms(label).map((t) => t.toLowerCase())
+  const score = (e: T) => {
+    const name = e.label.trim().toLowerCase()
+    const at = terms.indexOf(name)
+    return at >= 0 ? -100 + at : Math.abs(e.label.length - label.length)
+  }
+  return [...found].sort((a, b) => score(a) - score(b) || a.label.localeCompare(b.label))
+}
+
+/** The graph entity a click may adopt WITHOUT asking: exactly one candidate whose name
+ * equals the sandbox entity's name (ignoring case, and company suffixes such as
+ * "Inc."). Anything fuzzier, or two equally good matches, is left for the user to pick. */
+export function pickAutoMatch<T extends { label: string }>(label: string, found: T[]): T | null {
+  const terms = new Set(searchTerms(label).map((t) => t.toLowerCase()))
+  const exact = found.filter((e) => terms.has(e.label.trim().toLowerCase()))
+  return exact.length === 1 ? exact[0] : null
+}
+
+/** Accept a graph entity as "the same thing" as a sandbox-only entity: the real entity
+ * is copied in beside it (so its connections can be followed) and, when the ontology
+ * has `linkType`, joined to it. Identity stays a hypothesis the user can delete. */
+export function addGraphMatch(
+  doc: SandboxDoc,
+  newNodeId: string,
+  entity: GraphEntity,
+  linkType: string | null,
+): SandboxDoc {
+  const from = doc.nodes.find((n) => n.id === newNodeId)
+  if (!from || doc.nodes.some((n) => n.id === entity.entity_id)) return doc
+  const level = from.parent ?? null
+  const nodes = [
+    ...doc.nodes,
+    {
+      id: entity.entity_id,
+      origin: 'graph' as const,
+      label: entity.label,
+      entity_subclass: entity.entity_subclass,
+      x: from.x + 280,
+      y: from.y,
+      base: { label: entity.label, entity_subclass: entity.entity_subclass },
+      parent: level,
+    },
+  ]
+  const edges = linkType
+    ? [
+        ...doc.edges,
+        {
+          id: newId('E'),
+          origin: 'new' as const,
+          source: newNodeId,
+          target: entity.entity_id,
+          link_type: linkType,
+          base_type: null,
+          parent: level,
+        },
+      ]
+    : doc.edges
+  return { nodes, edges }
+}
