@@ -10,6 +10,7 @@ from app.llm.client import LLMError
 from app.models.sandbox import SandboxCreate, SandboxEdge, SandboxNode, SandboxOut, SandboxSave, SandboxSummary
 from app.services import sandbox as svc
 from app.services import sandbox_agent as agent
+from app.services.extraction_agent import extract_preview
 
 router = APIRouter(prefix="/sandbox", tags=["sandbox"])
 
@@ -113,3 +114,40 @@ async def agent_ops(body: OpsBody, user: str = Depends(require_auth)):
 @router.post("/agent/describe")
 async def agent_describe(body: _Canvas, user: str = Depends(require_auth)):
     return {"summary": agent.describe_sandbox(body.nodes, body.edges, body.container)}
+
+
+# ---- ingest a scenario into a sandbox ------------------------------------------------
+
+
+class ExtractBody(BaseModel):
+    text: str = Field(min_length=1, max_length=20_000)
+
+
+@router.post("/extract")
+async def extract_scenario(body: ExtractBody, user: str = Depends(require_auth)):
+    """Turn scenario text into proposed entities and links for the sandbox.
+
+    Nothing is saved anywhere: no ingest batch and no entities. Links may point
+    at real graph entities the text mentions; those are returned (read-only) in
+    `existing_entities` so the browser can copy them into the canvas too.
+    """
+    agent.check_rate(user)
+    text = body.text.strip()
+    if not text:
+        raise HTTPException(status_code=422, detail="Scenario text is empty")
+    async with get_driver().session() as session:
+        try:
+            result = await extract_preview(session, text)
+        except LLMError as e:
+            raise HTTPException(status_code=502, detail=str(e))
+        in_batch = {e["entity_id"] for e in result["entities"]}
+        existing = []
+        for link in result["links"]:
+            for end in (link["source_entity"], link["target_entity"]):
+                if end not in in_batch and all(x["entity_id"] != end for x in existing):
+                    found = await agent._load_graph_entity(session, end)
+                    if found:
+                        existing.append(
+                            {k: found[k] for k in ("entity_id", "label", "entity_subclass")}
+                        )
+    return {**result, "existing_entities": existing}

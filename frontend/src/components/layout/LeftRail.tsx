@@ -111,8 +111,8 @@ export function LeftRail({
           Extraction agent
         </span>
         <p className="text-xs text-[var(--color-text-muted)]">
-          Describe a scenario in plain text — the agent proposes entities and links for you to
-          review and commit.
+          Describe a scenario in plain text — the agent extracts entities and links and adds them
+          to a sandbox you can rearrange. The real graph is not changed.
         </p>
         <Button variant="primary" onClick={onOpenIngest}>
           Ingest scenario…

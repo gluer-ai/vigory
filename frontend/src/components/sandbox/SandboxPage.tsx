@@ -28,6 +28,7 @@ import { api, ApiError } from '../../lib/api'
 import {
   addEdge,
   addNewEntity,
+  addScenario,
   brokenLinksIfReclassified,
   childCount,
   containerExists,
@@ -53,12 +54,14 @@ import type {
   SandboxEdgeData,
   SandboxNodeData,
   SandboxSummary,
+  ScenarioExtract,
 } from '../../lib/types'
 import { RelationEdge, type RelationEdgeData } from '../graph/RelationEdge'
 import { EntitySearch } from '../layout/EntitySearch'
 import { Button } from '../ui/Button'
 import { Select } from '../ui/Select'
 import { AssistantPanel } from './AssistantPanel'
+import { ScenarioDialog } from './ScenarioDialog'
 import { SandboxNode, type SandboxNodeViewData } from './SandboxNode'
 import { useSandbox, type SaveState } from './useSandbox'
 
@@ -79,17 +82,51 @@ type Selection = { kind: 'node' | 'edge'; id: string } | null
 const inputCls =
   'w-full rounded-md border border-[var(--color-border)] bg-[var(--color-surface-0)] px-2 py-1.5 text-sm text-[var(--color-text-primary)] focus-visible:border-[var(--color-focus)]'
 
-export function SandboxPage() {
+const ACTIVE_KEY = 'vigory.sandbox.active'
+
+/** Summarise what an added scenario did, for the confirmation line. */
+function describeAddition(r: { entities: number; copied: number; links: number; skippedLinks: number }) {
+  const parts = [
+    `${r.entities} ${r.entities === 1 ? 'entity' : 'entities'}`,
+    `${r.links} ${r.links === 1 ? 'link' : 'links'}`,
+  ]
+  let msg = `Added ${parts.join(' and ')}`
+  if (r.copied > 0) msg += `, plus ${r.copied} existing graph ${r.copied === 1 ? 'entity' : 'entities'}`
+  msg += '.'
+  if (r.skippedLinks > 0) msg += ` ${r.skippedLinks} ${r.skippedLinks === 1 ? 'link' : 'links'} could not be placed.`
+  return msg
+}
+
+type Adder = { name: string; add: (extract: ScenarioExtract) => string }
+
+interface SandboxPageProps {
+  /** The "Ingest scenario" dialog is controlled by the app so the left-rail button can open it. */
+  ingestOpen: boolean
+  onIngestOpenChange: (open: boolean) => void
+}
+
+export function SandboxPage({ ingestOpen, onIngestOpenChange }: SandboxPageProps) {
   const [list, setList] = useState<SandboxSummary[]>([])
+  const [listLoaded, setListLoaded] = useState(false)
   const [listError, setListError] = useState('')
-  const [activeId, setActiveId] = useState<string | null>(null)
+  // Remembered for the tab session, so leaving and coming back (or being sent here
+  // by "Ingest scenario") returns to the sandbox you were working in.
+  const [activeId, setActiveIdState] = useState<string | null>(() => sessionStorage.getItem(ACTIVE_KEY))
+  const [adder, setAdder] = useState<Adder | null>(null)
   const [classes, setClasses] = useState<ClassDef[]>([])
   const [linkDefs, setLinkDefs] = useState<LinkDef[]>([])
+
+  const setActiveId = useCallback((id: string | null) => {
+    setActiveIdState(id)
+    if (id) sessionStorage.setItem(ACTIVE_KEY, id)
+    else sessionStorage.removeItem(ACTIVE_KEY)
+  }, [])
 
   const refreshList = useCallback(async () => {
     try {
       setList(await api.listSandboxes())
       setListError('')
+      setListLoaded(true)
     } catch (err) {
       setListError(err instanceof ApiError ? err.message : 'Could not reach the backend')
     }
@@ -100,6 +137,40 @@ export function SandboxPage() {
     api.getClasses().then(setClasses).catch(() => {})
     api.getLinkDefs().then(setLinkDefs).catch(() => {})
   }, [refreshList])
+
+  // A remembered sandbox that no longer exists (deleted elsewhere) is dropped -
+  // checked once, against the first list. Later changes to the list must not
+  // clear a sandbox that was just created and is not in it yet.
+  const rememberedChecked = useRef(false)
+  useEffect(() => {
+    if (!listLoaded || rememberedChecked.current) return
+    rememberedChecked.current = true
+    if (activeId && !list.some((s) => s.sandbox_id === activeId)) setActiveId(null)
+  }, [listLoaded, list, activeId, setActiveId])
+
+  /** Create a sandbox holding an extracted scenario. An unsaved empty
+   * sandbox is not left behind if filling it fails. */
+  const createFromScenario = useCallback(
+    async (name: string, extract: ScenarioExtract) => {
+      const sb = await api.createSandbox(name)
+      try {
+        const added = addScenario({ nodes: sb.nodes, edges: sb.edges }, extract, null)
+        await api.saveSandbox(sb.sandbox_id, {
+          name,
+          nodes: added.doc.nodes,
+          edges: added.doc.edges,
+          version: sb.version,
+        })
+        setActiveId(sb.sandbox_id)
+        void refreshList()
+        return describeAddition(added)
+      } catch (err) {
+        await api.deleteSandbox(sb.sandbox_id).catch(() => {})
+        throw err
+      }
+    },
+    [refreshList, setActiveId],
+  )
 
   return (
     <div className="flex h-full min-h-0 w-full">
@@ -125,6 +196,7 @@ export function SandboxPage() {
             classes={classes}
             linkDefs={linkDefs}
             onSaved={refreshList}
+            onAdderChange={setAdder}
           />
         </ReactFlowProvider>
       ) : (
@@ -136,6 +208,12 @@ export function SandboxPage() {
           </p>
         </div>
       )}
+      <ScenarioDialog
+        open={ingestOpen}
+        onOpenChange={onIngestOpenChange}
+        current={activeId ? adder : null}
+        createNew={createFromScenario}
+      />
     </div>
   )
 }
@@ -282,11 +360,14 @@ function Editor({
   classes,
   linkDefs,
   onSaved,
+  onAdderChange,
 }: {
   sandboxId: string
   classes: ClassDef[]
   linkDefs: LinkDef[]
   onSaved: () => void
+  /** Tells the page how to add an extracted scenario to THIS sandbox (null when unmounted). */
+  onAdderChange: (adder: Adder | null) => void
 }) {
   const { doc, getDoc, name, loadState, saveState, message, edit, rename, retry, reload } =
     useSandbox(sandboxId)
@@ -318,6 +399,22 @@ function Editor({
     setNotice('')
   }, [])
   const goUp = useCallback(() => go(trail.length >= 2 ? trail[trail.length - 2].id : null), [go, trail])
+
+  // Offer "add a scenario to this sandbox" to the page's ingest dialog. New items
+  // land on the level currently on screen.
+  const addScenarioHere = useCallback(
+    (extract: ScenarioExtract) => {
+      const added = addScenario(getDoc(), extract, here)
+      edit(() => added.doc)
+      return describeAddition(added)
+    },
+    [getDoc, edit, here],
+  )
+  useEffect(() => {
+    if (loadState !== 'ready') return
+    onAdderChange({ name, add: addScenarioHere })
+    return () => onAdderChange(null)
+  }, [loadState, name, addScenarioHere, onAdderChange])
 
   // Escape = come back out one level (unless something else, like an open
   // dropdown, already used the key).

@@ -265,3 +265,13 @@ export interface AgentOp {
   op: string
   [field: string]: unknown
 }
+
+/** Result of extracting a scenario for the sandbox (nothing is saved server-side). */
+export interface ScenarioExtract {
+  entities: Pick<Entity, 'entity_id' | 'label' | 'entity_subclass'>[]
+  links: Pick<Link, 'link_type' | 'source_entity' | 'target_entity'>[]
+  rejected_entities: unknown[]
+  rejected_links: unknown[]
+  /** Real graph entities the text referred to; copied in so links can reach them. */
+  existing_entities: Pick<Entity, 'entity_id' | 'label' | 'entity_subclass'>[]
+}

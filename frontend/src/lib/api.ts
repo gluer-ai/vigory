@@ -22,6 +22,7 @@ import type {
   SandboxEdgeData,
   SandboxNodeData,
   SandboxSummary,
+  ScenarioExtract,
   VoiceSessionResponse,
   VoiceToolResult,
 } from './types'
@@ -104,6 +105,13 @@ export const authApi = {
 }
 
 export const api = {
+  extractScenario: (text: string) =>
+    request<ScenarioExtract>('/sandbox/extract', {
+      method: 'POST',
+      body: JSON.stringify({ text }),
+      // Extraction makes real LLM calls (and may extend the ontology); allow longer.
+      signal: AbortSignal.timeout(180000),
+    }),
   listSandboxes: () => request<SandboxSummary[]>('/sandbox'),
   createSandbox: (name: string, triggerEntityId?: string, hops = 2) =>
     request<Sandbox>('/sandbox', {

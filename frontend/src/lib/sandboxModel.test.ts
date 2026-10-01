@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import {
   addEdge,
+  addScenario,
   brokenLinksIfReclassified,
   addNewEntity,
   childCount,
@@ -20,7 +21,7 @@ import {
   validLinkTypes,
   type SandboxDoc,
 } from './sandboxModel'
-import type { ClassDef, Link, LinkDef } from './types'
+import type { ClassDef, Link, LinkDef, ScenarioExtract } from './types'
 
 const cls = (key: string, label: string, parent: string | null = null): ClassDef => ({
   key, label, parent_key: parent, level: parent ? 2 : 1, notes: null,
@@ -291,5 +292,79 @@ describe('explodeInto', () => {
     expect(out.nodes.map((n) => n.id)).toEqual(['P', 'N1', 'N2'])
     expect(out.nodes.find((n) => n.id === 'N1')?.parent).toBeNull() // stayed where it was
     expect(explodeInto(d, 'P', [ent('N1')], [])).toBe(d)
+  })
+})
+
+describe('addScenario', () => {
+  const ex = (over: Partial<ScenarioExtract> = {}): ScenarioExtract => ({
+    entities: [
+      { entity_id: 'P-temp1', label: 'Ivan', entity_subclass: 'PERSON.X' },
+      { entity_id: 'O-temp1', label: 'Acme', entity_subclass: 'ORGANIZATION.Y' },
+    ],
+    links: [{ link_type: 'commands', source_entity: 'P-temp1', target_entity: 'O-temp1' }],
+    rejected_entities: [], rejected_links: [], existing_entities: [], ...over,
+  })
+
+  it('adds new entities and links as sandbox-only, with fresh ids', () => {
+    const r = addScenario({ nodes: [], edges: [] }, ex())
+    expect([r.entities, r.links, r.copied, r.skippedLinks]).toEqual([2, 1, 0, 0])
+    expect(r.doc.nodes.every((n) => n.origin === 'new' && n.base === null && n.parent === null)).toBe(true)
+    expect(r.doc.nodes.map((n) => n.id).some((id) => id.includes('temp'))).toBe(false)
+    const [ivan, acme] = r.doc.nodes
+    expect(r.doc.edges[0]).toMatchObject({ source: ivan.id, target: acme.id, link_type: 'commands', origin: 'new', base_type: null })
+    expect(new Set(r.doc.nodes.map((n) => `${n.x},${n.y}`)).size).toBe(2) // not stacked
+  })
+
+  it('copies referenced real entities in (as graph origin) so links can reach them', () => {
+    const r = addScenario({ nodes: [], edges: [] }, ex({
+      entities: [{ entity_id: 'O-temp1', label: 'Acme', entity_subclass: 'ORGANIZATION.Y' }],
+      existing_entities: [{ entity_id: 'P-1', label: 'Ivan', entity_subclass: 'PERSON.X' }],
+      links: [{ link_type: 'commands', source_entity: 'P-1', target_entity: 'O-temp1' }],
+    }))
+    const real = r.doc.nodes.find((n) => n.id === 'P-1')!
+    expect(real).toMatchObject({ origin: 'graph', base: { label: 'Ivan', entity_subclass: 'PERSON.X' } })
+    expect([r.copied, r.links]).toEqual([1, 1])
+    expect(r.doc.edges[0].source).toBe('P-1')
+  })
+
+  it('reuses a real entity already on this level, and skips links to one on another level', () => {
+    const base: SandboxDoc = { nodes: [node('P-1', 'PERSON.X'), node('Q-1', 'PERSON.X', { parent: 'box' })], edges: [] }
+    const real = (id: string) => ({ entity_id: id, label: id, entity_subclass: 'PERSON.X' })
+    const r = addScenario(base, ex({
+      existing_entities: [real('P-1'), real('Q-1')],
+      links: [
+        { link_type: 'commands', source_entity: 'P-1', target_entity: 'O-temp1' },
+        { link_type: 'commands', source_entity: 'Q-1', target_entity: 'O-temp1' },
+      ],
+    }))
+    expect(r.copied).toBe(0)
+    expect(r.doc.nodes.filter((n) => n.id === 'P-1')).toHaveLength(1)
+    expect([r.links, r.skippedLinks]).toEqual([1, 1])
+  })
+
+  it('skips dangling, self and duplicate links', () => {
+    const r = addScenario({ nodes: [], edges: [] }, ex({
+      links: [
+        { link_type: 'commands', source_entity: 'P-temp1', target_entity: 'GONE' },
+        { link_type: 'commands', source_entity: 'P-temp1', target_entity: 'P-temp1' },
+        { link_type: 'commands', source_entity: 'P-temp1', target_entity: 'O-temp1' },
+        { link_type: 'commands', source_entity: 'P-temp1', target_entity: 'O-temp1' },
+      ],
+    }))
+    expect([r.links, r.skippedLinks]).toEqual([1, 3])
+  })
+
+  it('lands inside a container and below what is already on that level', () => {
+    const base: SandboxDoc = { nodes: [node('box', 'PERSON.X', { y: 300 }), node('in', 'PERSON.X', { parent: 'box', y: 500 })], edges: [] }
+    const r = addScenario(base, ex(), 'box')
+    const added = r.doc.nodes.filter((n) => n.origin === 'new')
+    expect(added.every((n) => n.parent === 'box' && n.y >= 720)).toBe(true)
+    expect(r.doc.edges[0].parent).toBe('box')
+  })
+
+  it('leaves the input document untouched', () => {
+    const base: SandboxDoc = { nodes: [], edges: [] }
+    addScenario(base, ex())
+    expect(base).toEqual({ nodes: [], edges: [] })
   })
 })

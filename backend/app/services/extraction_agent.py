@@ -476,6 +476,21 @@ async def resolve_rejected(
     }
 
 
+async def extract_preview(session: AsyncSession, text: str) -> dict:
+    """Extract and validate entities/links from text WITHOUT saving a proposal
+    batch. Used by the sandbox, which keeps the result in the user's private
+    canvas instead. (The only shared state it can touch is the ontology, when
+    the agent adds a class/link type that did not exist - tagged
+    origin=extraction.)"""
+    result = await _extract_and_validate(session, text)
+    return {
+        "entities": result["valid_entities"],
+        "links": result["valid_links"],
+        "rejected_entities": result["rejected_entities"],
+        "rejected_links": result["rejected_links"],
+    }
+
+
 async def extract_from_text(session: AsyncSession, text: str) -> dict:
     """Single-shot extraction for pasted scenario text: validate via
     _extract_and_validate, then persist as a standalone proposed

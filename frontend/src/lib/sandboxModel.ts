@@ -1,4 +1,12 @@
-import type { ClassDef, Entity, LinkDef, Link, SandboxEdgeData, SandboxNodeData } from './types'
+import type {
+  ClassDef,
+  Entity,
+  Link,
+  LinkDef,
+  SandboxEdgeData,
+  SandboxNodeData,
+  ScenarioExtract,
+} from './types'
 
 /** Pure editing rules for the sandbox canvas (no React, no network). */
 
@@ -288,4 +296,94 @@ export function brokenLinksIfReclassified(
       (e.source === nodeId || e.target === nodeId) &&
       !validLinkTypes(linkDefs, sub(e.source), sub(e.target), classes).some((l) => l.type === e.link_type),
   )
+}
+
+export interface ScenarioAddition {
+  doc: SandboxDoc
+  entities: number
+  /** Real graph entities copied in because the text referred to them. */
+  copied: number
+  links: number
+  /** Links not added: an end is missing, on another level, or the link already exists. */
+  skippedLinks: number
+}
+
+/** Place an extracted scenario into the sandbox at one level: new entities
+ * and links are sandbox-only ("new"); real entities the text mentioned are
+ * copied in. Pure - the real graph is never involved. */
+export function addScenario(
+  doc: SandboxDoc,
+  extract: ScenarioExtract,
+  container: string | null = null,
+): ScenarioAddition {
+  const level = doc.nodes.filter((n) => (n.parent ?? null) === container)
+  const top = level.length ? Math.max(...level.map((n) => n.y)) + 220 : 0
+  let slot = 0
+  const nextPos = () => {
+    const pos = { x: (slot % 4) * 260, y: top + Math.floor(slot / 4) * 170 }
+    slot += 1
+    return pos
+  }
+
+  const ids = new Map<string, string>() // extracted/real id -> id on this canvas
+  const nodes = [...doc.nodes]
+  let copied = 0
+
+  for (const e of extract.existing_entities) {
+    const there = doc.nodes.find((n) => n.id === e.entity_id)
+    if (there) {
+      if ((there.parent ?? null) === container) ids.set(e.entity_id, there.id)
+      continue // on another level: links to it are skipped
+    }
+    nodes.push({
+      id: e.entity_id,
+      origin: 'graph',
+      label: e.label,
+      entity_subclass: e.entity_subclass,
+      ...nextPos(),
+      base: { label: e.label, entity_subclass: e.entity_subclass },
+      parent: container,
+    })
+    ids.set(e.entity_id, e.entity_id)
+    copied += 1
+  }
+  for (const e of extract.entities) {
+    const id = newId('N')
+    ids.set(e.entity_id, id)
+    nodes.push({
+      id,
+      origin: 'new',
+      label: e.label,
+      entity_subclass: e.entity_subclass,
+      ...nextPos(),
+      base: null,
+      parent: container,
+    })
+  }
+
+  const edges = [...doc.edges]
+  let links = 0
+  let skippedLinks = 0
+  for (const l of extract.links) {
+    const s = ids.get(l.source_entity)
+    const t = ids.get(l.target_entity)
+    const duplicate = edges.some(
+      (x) => x.source === s && x.target === t && x.link_type === l.link_type && (x.parent ?? null) === container,
+    )
+    if (!s || !t || s === t || duplicate) {
+      skippedLinks += 1
+      continue
+    }
+    edges.push({
+      id: newId('E'),
+      origin: 'new',
+      source: s,
+      target: t,
+      link_type: l.link_type,
+      base_type: null,
+      parent: container,
+    })
+    links += 1
+  }
+  return { doc: { nodes, edges }, entities: extract.entities.length, copied, links, skippedLinks }
 }

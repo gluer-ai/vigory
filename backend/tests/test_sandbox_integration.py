@@ -301,3 +301,42 @@ async def test_agent_describe_and_input_limits(api):
     assert (await api.post("/sandbox/agent/chat", json=big, headers=api.alice)).status_code == 422
     empty = {"nodes": sb["nodes"], "edges": sb["edges"], "ops": []}
     assert (await api.post("/sandbox/agent/ops", json=empty, headers=api.alice)).status_code == 422
+
+
+# ---- scenario ingest into a sandbox ---------------------------------------------------
+
+
+async def test_extract_returns_a_preview_and_saves_nothing(api, driver, monkeypatch):
+    assert (await api.post("/sandbox/extract", json={"text": "x"})).status_code == 401
+
+    async def fake_preview(session, text):
+        assert text == "Ivan commands Acme."
+        return {
+            "entities": [{"entity_id": "O-temp1", "label": "New Org", "entity_subclass": "ORGANIZATION.COMMERCIAL_ENTITY"}],
+            "links": [
+                {"link_id": "L-temp1", "link_type": "commands", "source_entity": "P-1", "target_entity": "O-temp1"},
+                {"link_id": "L-temp2", "link_type": "commands", "source_entity": "GHOST", "target_entity": "O-temp1"},
+            ],
+            "rejected_entities": [], "rejected_links": [],
+        }
+
+    monkeypatch.setattr(sandbox_api, "extract_preview", fake_preview)
+    before = await real_graph(driver)
+    r = await api.post("/sandbox/extract", json={"text": "  Ivan commands Acme.  "}, headers=api.alice)
+    assert r.status_code == 200, r.text
+    out = r.json()
+    # P-1 is a real entity the text referred to: returned read-only. GHOST does not exist: omitted.
+    assert [e["entity_id"] for e in out["existing_entities"]] == ["P-1"]
+    assert out["existing_entities"][0]["label"] == "Ivan"
+    assert len(out["entities"]) == 1 and len(out["links"]) == 2
+
+    async with driver.session() as s:
+        batches = await (await s.run("MATCH (b:IngestBatch) RETURN count(b) AS n")).single()
+    assert batches["n"] == 0  # no proposal batch was created
+    assert await real_graph(driver) == before
+
+
+async def test_extract_validates_input(api):
+    for body in ({"text": ""}, {"text": "x" * 20_001}, {}):
+        assert (await api.post("/sandbox/extract", json=body, headers=api.alice)).status_code == 422
+    assert (await api.post("/sandbox/extract", json={"text": "   "}, headers=api.alice)).status_code == 422

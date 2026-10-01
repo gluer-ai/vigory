@@ -7,7 +7,6 @@ import { ScopeListView } from './components/graph/ScopeListView'
 import { AppShell } from './components/layout/AppShell'
 import { EmptyState, ErrorState, LoadingState } from './components/layout/CanvasStates'
 import { AddResourceDialog } from './components/layout/AddResourceDialog'
-import { IngestDialog } from './components/layout/IngestDialog'
 import { Inspector } from './components/layout/Inspector'
 import { LeftRail, type Page } from './components/layout/LeftRail'
 import { SandboxPage } from './components/sandbox/SandboxPage'
@@ -88,11 +87,11 @@ function App() {
     handleSelectEntity(entityId)
   }
 
-  function handleIngestCommitted(firstEntityId: string) {
-    // Leave the dialog open on its "committed" confirmation screen — the
-    // user closes it themselves via "View in graph", which is when we
-    // actually want the canvas to jump to the new trigger entity.
-    setTriggerEntityId(firstEntityId)
+  // "Ingest scenario" sends you to the Sandbox, where the extracted entities and
+  // links are added to a private copy instead of the real graph.
+  function handleOpenIngest() {
+    setPage('sandbox')
+    setIngestOpen(true)
   }
 
   function handleResourceCreated(entityId: string) {
@@ -156,7 +155,7 @@ function App() {
             onViewChange={setView}
             linkTypeFilter={linkTypeFilter}
             onLinkTypeFilterChange={setLinkTypeFilter}
-            onOpenIngest={() => setIngestOpen(true)}
+            onOpenIngest={handleOpenIngest}
             onOpenAddResource={() => setAddResourceOpen(true)}
             onExplain={handleExplain}
             explainStatus={explainStatus}
@@ -183,7 +182,7 @@ function App() {
             ) : page === 'knowledge' ? (
               <KnowledgeBasePage />
             ) : page === 'sandbox' ? (
-              <SandboxPage />
+              <SandboxPage ingestOpen={ingestOpen} onIngestOpenChange={setIngestOpen} />
             ) : page === 'scope' ? (
               canvasContent
             ) : null}
@@ -200,11 +199,6 @@ function App() {
             )}
           </Drawer>
         }
-      />
-      <IngestDialog
-        open={ingestOpen}
-        onOpenChange={setIngestOpen}
-        onCommitted={handleIngestCommitted}
       />
       <AddResourceDialog
         open={addResourceOpen}
