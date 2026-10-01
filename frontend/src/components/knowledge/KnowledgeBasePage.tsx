@@ -1,5 +1,5 @@
 import { Upload } from 'lucide-react'
-import { useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { api, ApiError } from '../../lib/api'
 import type { Document } from '../../lib/types'
 import { DocumentReviewDialog } from './DocumentReviewDialog'
@@ -33,7 +33,7 @@ function formatSize(bytes: number): string {
 /** Upload documents (pdf/docx/xlsx/txt/md) and browse the resulting
  * extraction status — the file-upload counterpart to IngestDialog's
  * paste-text flow. Extraction runs in the background server-side; this
- * page polls GET /documents so status updates without any push mechanism. */
+ * page polls GET /documents only while a document is processing. */
 export function KnowledgeBasePage() {
   const [documents, setDocuments] = useState<Document[]>([])
   const [loadError, setLoadError] = useState('')
@@ -42,28 +42,28 @@ export function KnowledgeBasePage() {
   const [reviewDocId, setReviewDocId] = useState<string | null>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
 
-  useEffect(() => {
-    let cancelled = false
-    async function refresh() {
-      try {
-        const result = await api.listDocuments()
-        if (!cancelled) {
-          setDocuments(result)
-          setLoadError('')
-        }
-      } catch (err) {
-        if (!cancelled) {
-          setLoadError(err instanceof ApiError ? err.message : 'Failed to reach the backend')
-        }
-      }
-    }
-    refresh()
-    const id = setInterval(refresh, REFRESH_MS)
-    return () => {
-      cancelled = true
-      clearInterval(id)
+  const refresh = useCallback(async () => {
+    try {
+      setDocuments(await api.listDocuments())
+      setLoadError('')
+    } catch (err) {
+      setLoadError(err instanceof ApiError ? err.message : 'Failed to reach the backend')
     }
   }, [])
+
+  // Load once on mount.
+  useEffect(() => {
+    void refresh()
+  }, [refresh])
+
+  // Poll only while a document is still being extracted; once everything has
+  // settled (proposed/committed/error) there is nothing to wait for.
+  const anyProcessing = documents.some((d) => d.status === 'processing')
+  useEffect(() => {
+    if (!anyProcessing) return
+    const id = setInterval(() => void refresh(), REFRESH_MS)
+    return () => clearInterval(id)
+  }, [anyProcessing, refresh])
 
   async function handleFileChange(e: React.ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0]

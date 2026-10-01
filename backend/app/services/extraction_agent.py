@@ -26,6 +26,8 @@ relationships (links) from the given scenario text as strict JSON:
 "confidence": "<A-F 1-6 code>", "source_ref": "<short ref>"}}]
 }}
 entity_subclass and link_type MUST be copied exactly (case-sensitive) from these lists — \
+always the COMPLETE dotted key starting with its root class (e.g. "LOCATION.ADMINISTRATIVE_AREA\
+.MUNICIPALITY_SETTLEMENT", never "ADMINISTRATIVE_AREA.MUNICIPALITY_SETTLEMENT") — \
 never invent, abbreviate, or paraphrase a key, even if a synonym in the text (e.g. \
 "stationed at", "posted at") isn't literally one of these words. Use each link's domain \
 -> range and notes to pick the real link_type whose meaning best matches the text. Every \
@@ -100,6 +102,34 @@ async def _fetch_ontology_vocab(
     return class_keys, link_defs, inverse_to_forward
 
 
+async def _fetch_all_class_keys(session: AsyncSession) -> set[str]:
+    """Every ClassDef key (leaf or not), used to repair abbreviated keys."""
+    result = await session.run("MATCH (c:ClassDef) RETURN c.key AS key ORDER BY c.key")
+    return {record["key"] async for record in result}
+
+
+def resolve_class_key(value: object, all_keys: set[str]) -> str | None:
+    """Map a model-written entity_subclass to a real ClassDef key, or None.
+
+    Models routinely drop the root segment ("MUNICIPALITY_SETTLEMENT" or
+    "ADMINISTRATIVE_AREA.MUNICIPALITY_SETTLEMENT" for
+    "LOCATION.ADMINISTRATIVE_AREA.MUNICIPALITY_SETTLEMENT") or change case.
+    Those are unambiguous abbreviations, so accept them - but only when
+    exactly one real key matches. Anything ambiguous or unknown stays None
+    and is rejected for a human to classify; we never guess between keys.
+    """
+    if not isinstance(value, str):
+        return None
+    v = value.strip()
+    if v in all_keys:
+        return v
+    normalized = v.upper().replace(" ", "_")
+    if normalized in all_keys:
+        return normalized
+    matches = [k for k in all_keys if k.endswith("." + normalized)]
+    return matches[0] if len(matches) == 1 else None
+
+
 async def _fetch_existing_entities(session: AsyncSession, limit: int = 500) -> list[dict]:
     """Committed entities already in the graph, so a later ingest can extend
     earlier scenarios instead of duplicating people/orgs it re-mentions.
@@ -157,6 +187,7 @@ async def _extract_and_validate(
     mention across chunks reuses the same entity_id instead of duplicating it.
     """
     class_keys, link_defs, inverse_to_forward = await _fetch_ontology_vocab(session)
+    all_class_keys = await _fetch_all_class_keys(session)
     existing_entities = await _fetch_existing_entities(session)
     if extra_existing_entities:
         existing_entities = existing_entities + extra_existing_entities
@@ -184,6 +215,10 @@ async def _extract_and_validate(
     valid_entities, rejected_entities = [], []
     for row in raw.get("entities", []):
         try:
+            resolved = resolve_class_key(row.get("entity_subclass"), all_class_keys)
+            if resolved:
+                row["entity_subclass"] = resolved
+                row["entity_class"] = resolved.split(".")[0]
             entity = EntityCreate(**row)
             await validate_entity(session, entity)
             valid_entities.append(entity.model_dump(mode="json"))

@@ -456,3 +456,55 @@ async def test_classify_rejected_entities_propagates_llm_error(monkeypatch):
     session = FakeSession()
     with pytest.raises(LLMError):
         await extraction_agent_module.classify_rejected_entities(session, rejected)
+
+
+# ---- abbreviated class keys ---------------------------------------------------
+
+from app.services.extraction_agent import resolve_class_key  # noqa: E402
+
+_KEYS = {
+    "LOCATION.ADMINISTRATIVE_AREA.MUNICIPALITY_SETTLEMENT",
+    "ORGANIZATION.COMMERCIAL_ENTITY",
+    "ORGANIZATION.COMMERCIAL_ENTITY.FINANCIAL_INSTITUTION",
+    "PERSON.GENERAL",
+    "ORGANIZATION.GENERAL",
+}
+
+
+@pytest.mark.parametrize(
+    "value,expected",
+    [
+        ("ORGANIZATION.COMMERCIAL_ENTITY", "ORGANIZATION.COMMERCIAL_ENTITY"),  # exact
+        ("ADMINISTRATIVE_AREA.MUNICIPALITY_SETTLEMENT", "LOCATION.ADMINISTRATIVE_AREA.MUNICIPALITY_SETTLEMENT"),
+        ("MUNICIPALITY_SETTLEMENT", "LOCATION.ADMINISTRATIVE_AREA.MUNICIPALITY_SETTLEMENT"),
+        ("commercial_entity", "ORGANIZATION.COMMERCIAL_ENTITY"),  # case-insensitive
+        ("Commercial Entity", "ORGANIZATION.COMMERCIAL_ENTITY"),
+        ("GENERAL", None),  # ambiguous: PERSON.GENERAL vs ORGANIZATION.GENERAL
+        ("Place.New York City", None),  # invented
+        ("", None),
+        (None, None),
+        (42, None),
+    ],
+)
+def test_resolve_class_key(value, expected):
+    assert resolve_class_key(value, _KEYS) == expected
+
+
+async def test_extraction_repairs_abbreviated_subclass_and_root(monkeypatch):
+    async def fake_json(system_prompt, user_prompt):
+        return {
+            "entities": [
+                {"entity_id": "P-temp1", "entity_class": "Person", "entity_subclass": "MILITARY_PERSONNEL",
+                 "label": "Ivan", "confidence": "B2", "source_ref": "t"},
+                {"entity_id": "P-temp2", "entity_class": "Place", "entity_subclass": "Place.Nowhere",
+                 "label": "Nowhere", "confidence": "B2", "source_ref": "t"},
+            ],
+            "links": [],
+        }
+
+    monkeypatch.setattr(extraction_agent_module, "complete_json", fake_json)
+    result = await extraction_agent_module._extract_and_validate(FakeSession(), "text")
+    assert [(e["entity_subclass"], e["entity_class"]) for e in result["valid_entities"]] == [
+        ("PERSON.MILITARY_PERSONNEL", "PERSON")
+    ]
+    assert [r["row"]["label"] for r in result["rejected_entities"]] == ["Nowhere"]
