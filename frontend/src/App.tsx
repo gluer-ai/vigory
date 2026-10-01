@@ -9,7 +9,8 @@ import { EmptyState, ErrorState, LoadingState } from './components/layout/Canvas
 import { AddResourceDialog } from './components/layout/AddResourceDialog'
 import { IngestDialog } from './components/layout/IngestDialog'
 import { Inspector } from './components/layout/Inspector'
-import { LeftRail } from './components/layout/LeftRail'
+import { LeftRail, type Page } from './components/layout/LeftRail'
+import { SandboxPage } from './components/sandbox/SandboxPage'
 import { KnowledgeBasePage } from './components/knowledge/KnowledgeBasePage'
 import { VoicePage } from './components/voice/VoicePage'
 import { Drawer } from './components/ui/Drawer'
@@ -17,7 +18,7 @@ import { api, ApiError } from './lib/api'
 import type { Entity, RelevanceAnnotation, ScopeResponse } from './lib/types'
 
 function App() {
-  const [page, setPage] = useState<'scope' | 'browse' | 'map' | 'feeds' | 'knowledge' | 'voice'>('scope')
+  const [page, setPage] = useState<Page>('scope')
   const [triggerEntityId, setTriggerEntityId] = useState('')
   const [hops, setHops] = useState(2)
   const [linkTypeFilter, setLinkTypeFilter] = useState<string[]>([])
@@ -181,6 +182,8 @@ function App() {
               <FeedsPage />
             ) : page === 'knowledge' ? (
               <KnowledgeBasePage />
+            ) : page === 'sandbox' ? (
+              <SandboxPage />
             ) : page === 'scope' ? (
               canvasContent
             ) : null}

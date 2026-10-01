@@ -3,6 +3,8 @@ import { BaseEdge, EdgeLabelRenderer, getBezierPath, type EdgeProps } from '@xyf
 export interface RelationEdgeData {
   link_type: string
   proposed?: boolean
+  /** Sandbox only: entities/links nested inside this relation. */
+  inside?: number
   [key: string]: unknown
 }
 
@@ -45,6 +47,7 @@ export function RelationEdge({
           style={{ transform: `translate(-50%, -50%) translate(${labelX}px, ${labelY}px)` }}
         >
           {data.link_type}
+          {data.inside ? ` ⤢ ${data.inside}` : ''}
         </div>
       </EdgeLabelRenderer>
     </>

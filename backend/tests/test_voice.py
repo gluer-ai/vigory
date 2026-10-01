@@ -231,3 +231,33 @@ async def test_tool_endpoint_returns_tool_errors_to_the_model(api):
     res = await api.post("/voice/tools/nope", json={"arguments": {}})
     assert res.status_code == 200
     assert "Unknown tool" in res.json()["output"]["error"]
+
+
+# ---- sandbox voice mode ----------------------------------------------------------
+
+
+async def test_sandbox_mode_swaps_in_the_canvas_tools(api, monkeypatch):
+    class Fake:
+        async def create_webrtc_session(self, token, sdp):
+            return {"sdp": "ANSWER", "agent": {}}
+
+    async def ontology(session):
+        return {"PERSON.X": "person"}, {"commands": {"domain": "Person", "range": "Organization"}}
+
+    monkeypatch.setattr(voice_api, "VoiceClient", lambda settings: Fake())
+    monkeypatch.setattr(voice_api, "load_ontology", ontology)
+    res = await api.post("/voice/session?mode=sandbox", content="OFFER",
+                         headers={"content-type": "application/sdp", "authorization": "Bearer t"})
+    body = res.json()
+    assert res.status_code == 200
+    assert [t["name"] for t in body["tools"]] == ["get_sandbox", "edit_sandbox", "search_knowledge_graph"]
+    assert "VOICE assistant" in body["instructions"] and "PERSON.X" in body["instructions"]
+    assert "commands (Person -> Organization)" in body["instructions"]
+    op_enum = body["tools"][1]["parameters"]["properties"]["ops"]["items"]["properties"]["op"]["enum"]
+    assert "add_link" in op_enum and "drop_database" not in op_enum
+
+
+async def test_unknown_session_mode_is_rejected(api):
+    res = await api.post("/voice/session?mode=admin", content="x",
+                         headers={"content-type": "application/sdp", "authorization": "Bearer t"})
+    assert res.status_code == 422

@@ -55,7 +55,7 @@ async def test_verify_accepts_valid_and_caches():
 
     def handler(req: httpx.Request) -> httpx.Response:
         calls.append(req.headers["authorization"])
-        return httpx.Response(200, json={"id": 1})
+        return httpx.Response(200, json={"id": 7})
 
     t = httpx.MockTransport(handler)
     assert await auth.verify_platform_token(_settings(), "tok", t, now=100)
@@ -108,15 +108,15 @@ def client(monkeypatch):
     for mod in (auth, auth_api):
         monkeypatch.setattr(mod, "get_settings", lambda: s)
 
-    async def fake_verify(settings, token, *a, **k):
-        return token == "good"
+    async def fake_resolve(settings, token, *a, **k):
+        return "42" if token == "good" else None
 
     async def fake_login(settings, email, password, *a, **k):
         if (email, password) == ("a@b.com", "pw"):
             return "good"
         raise HTTPException(status_code=401, detail="Incorrect email or password")
 
-    monkeypatch.setattr(auth, "verify_platform_token", fake_verify)
+    monkeypatch.setattr(auth, "resolve_platform_user", fake_resolve)
     monkeypatch.setattr(auth_api, "platform_login", fake_login)
     return httpx.AsyncClient(transport=httpx.ASGITransport(app=create_app()), base_url="http://t")
 
@@ -165,3 +165,45 @@ async def test_auth_disabled_when_mode_unset(monkeypatch):
     assert (await c.get("/voice/status")).status_code == 200
     r = await c.post("/auth/login", json={"email": "a@b.com", "password": "x"})
     assert r.status_code == 400
+
+
+async def test_resolve_returns_user_id_and_caches_it():
+    calls = []
+
+    def handler(req):
+        calls.append(1)
+        return httpx.Response(200, json={"id": 7, "email": "a@b.c"})
+
+    t = httpx.MockTransport(handler)
+    assert await auth.resolve_platform_user(_settings(), "tok", t, now=1) == "7"
+    assert await auth.resolve_platform_user(_settings(), "tok", t, now=2) == "7"
+    assert len(calls) == 1
+    assert await auth.resolve_platform_user(_settings(), "other", httpx.MockTransport(lambda r: httpx.Response(401)), now=2) is None
+
+
+async def test_resolve_fails_closed_when_me_has_no_id():
+    t = httpx.MockTransport(lambda r: httpx.Response(200, json={"email": "x"}))
+    with pytest.raises(HTTPException) as e:
+        await auth.resolve_platform_user(_settings(), "tok", t)
+    assert e.value.status_code == 503
+
+
+async def test_require_auth_returns_user_or_local(monkeypatch):
+    from fastapi.security import HTTPAuthorizationCredentials as C
+
+    off = Settings(auth_mode="")
+    monkeypatch.setattr(auth, "get_settings", lambda: off)
+    assert await auth.require_auth(None) == auth.LOCAL_USER
+
+    on = _settings()
+    monkeypatch.setattr(auth, "get_settings", lambda: on)
+
+    async def fake_resolve(settings, token, *a, **k):
+        return "42" if token == "good" else None
+
+    monkeypatch.setattr(auth, "resolve_platform_user", fake_resolve)
+    assert await auth.require_auth(C(scheme="Bearer", credentials="good")) == "42"
+    with pytest.raises(HTTPException):
+        await auth.require_auth(C(scheme="Bearer", credentials="bad"))
+    with pytest.raises(HTTPException):
+        await auth.require_auth(None)

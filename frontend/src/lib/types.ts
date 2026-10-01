@@ -198,3 +198,70 @@ export interface VoiceToolResult {
   output: Record<string, unknown>
   ui?: VoiceUiEffect
 }
+
+// ---- Sandbox: a private, editable working copy of part of the graph ----------
+
+export interface SandboxNodeData {
+  id: string
+  origin: 'graph' | 'new'
+  label: string
+  entity_subclass: string
+  x: number
+  y: number
+  /** What a graph-origin node looked like when copied (for "what changed"). */
+  base: { label: string; entity_subclass: string } | null
+  /** The entity or link this one sits inside (null = top level). */
+  parent: string | null
+}
+
+export interface SandboxEdgeData {
+  id: string
+  origin: 'graph' | 'new'
+  source: string
+  target: string
+  link_type: string
+  base_type: string | null
+  parent: string | null
+}
+
+export interface SandboxSummary {
+  sandbox_id: string
+  name: string
+  version: number
+  node_count: number
+  edge_count: number
+  updated_at: string
+}
+
+export interface Sandbox extends SandboxSummary {
+  nodes: SandboxNodeData[]
+  edges: SandboxEdgeData[]
+}
+
+// ---- Sandbox assistant (chat / voice edits) -----------------------------------
+
+export interface AgentOpResult {
+  op: string
+  ok: boolean
+  message: string
+}
+
+export interface AgentEditResponse {
+  nodes: SandboxNodeData[]
+  edges: SandboxEdgeData[]
+  results: AgentOpResult[]
+  changed: boolean
+}
+
+export interface AgentChatResponse extends AgentEditResponse {
+  reply: string
+}
+
+export interface AgentOpsResponse extends AgentEditResponse {
+  summary: string
+}
+
+export interface AgentOp {
+  op: string
+  [field: string]: unknown
+}

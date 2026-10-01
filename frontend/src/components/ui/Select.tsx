@@ -13,10 +13,10 @@ export function Select({ value, onValueChange, options, placeholder, ...aria }: 
   return (
     <RadixSelect.Root value={value} onValueChange={onValueChange}>
       <RadixSelect.Trigger
-        className="inline-flex w-full items-center justify-between gap-2 rounded-md border border-[var(--color-border)] bg-[var(--color-surface-1)] py-1.5 ps-3 pe-2 text-sm text-[var(--color-text-primary)] hover:border-[var(--color-border-strong)]"
+        className="inline-flex w-full min-w-0 items-center justify-between gap-2 rounded-md border border-[var(--color-border)] bg-[var(--color-surface-1)] py-1.5 ps-3 pe-2 text-sm text-[var(--color-text-primary)] hover:border-[var(--color-border-strong)]"
         aria-label={aria['aria-label']}
       >
-        <RadixSelect.Value placeholder={placeholder} />
+        <RadixSelect.Value placeholder={placeholder} className="min-w-0 truncate" />
         <RadixSelect.Icon>
           <ChevronDown size={14} className="text-[var(--color-text-muted)]" />
         </RadixSelect.Icon>

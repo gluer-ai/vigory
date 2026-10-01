@@ -22,14 +22,20 @@ export interface ScenarioRef {
 }
 
 interface Callbacks {
-  onBatch: (batch: IngestBatch) => void
-  onScenario: (scenario: ScenarioRef) => void
+  onBatch?: (batch: IngestBatch) => void
+  onScenario?: (scenario: ScenarioRef) => void
+  /** 'kb' (default) grounds the agent in the knowledge base; 'sandbox' gives it
+   * the tools for editing the sandbox canvas. */
+  mode?: 'kb' | 'sandbox'
+  /** Handle a tool in the browser (e.g. canvas edits). Return `undefined` to
+   * fall through to the backend's knowledge-base tools. */
+  onTool?: (name: string, args: Record<string, unknown>) => Promise<unknown | undefined>
 }
 
 /** Owns one WebRTC voice session: mic -> (Vigory relays SDP to the voice
  * platform) -> OpenAI Realtime. Tool calls from the model are executed on
  * the Vigory backend; their `ui` effects are handed to the panel. */
-export function useVoiceSession({ onBatch, onScenario }: Callbacks) {
+export function useVoiceSession({ onBatch, onScenario, onTool, mode = 'kb' }: Callbacks) {
   const [status, setStatus] = useState<VoiceStatus>('idle')
   const [error, setError] = useState('')
   const [lines, setLines] = useState<TranscriptLine[]>([])
@@ -42,8 +48,8 @@ export function useVoiceSession({ onBatch, onScenario }: Callbacks) {
   const sessionId = useRef('')
   const nextId = useRef(0)
   const lineLog = useRef<string[]>([])
-  const cb = useRef({ onBatch, onScenario })
-  cb.current = { onBatch, onScenario }
+  const cb = useRef({ onBatch, onScenario, onTool })
+  cb.current = { onBatch, onScenario, onTool }
 
   const addLine = useCallback((role: TranscriptLine['role'], text: string) => {
     setLines((prev) => [...prev, { id: nextId.current++, role, text }])
@@ -55,11 +61,16 @@ export function useVoiceSession({ onBatch, onScenario }: Callbacks) {
       addLine('tool', `${ev.name}(${JSON.stringify(ev.args)})`)
       let output: unknown
       try {
-        const res = await api.callVoiceTool(ev.name, ev.args)
-        output = res.output
-        if (res.ui?.type === 'batch') cb.current.onBatch(res.ui.batch)
-        if (res.ui?.type === 'scenario')
-          cb.current.onScenario({ triggerEntityId: res.ui.trigger_entity_id, hops: res.ui.hops })
+        const local = cb.current.onTool ? await cb.current.onTool(ev.name, ev.args) : undefined
+        if (local !== undefined) {
+          output = local
+        } else {
+          const res = await api.callVoiceTool(ev.name, ev.args)
+          output = res.output
+          if (res.ui?.type === 'batch') cb.current.onBatch?.(res.ui.batch)
+          if (res.ui?.type === 'scenario')
+            cb.current.onScenario?.({ triggerEntityId: res.ui.trigger_entity_id, hops: res.ui.hops })
+        }
       } catch (err) {
         output = { error: err instanceof ApiError ? err.message : 'Tool call failed' }
       }
@@ -116,7 +127,7 @@ export function useVoiceSession({ onBatch, onScenario }: Callbacks) {
 
       const offer = await pc.createOffer()
       await pc.setLocalDescription(offer)
-      const session = await api.createVoiceSession(offer.sdp ?? '')
+      const session = await api.createVoiceSession(offer.sdp ?? '', mode)
       await pc.setRemoteDescription({ type: 'answer', sdp: session.sdp })
 
       dc.onopen = () => {
@@ -148,7 +159,7 @@ export function useVoiceSession({ onBatch, onScenario }: Callbacks) {
       )
       setStatus('error')
     }
-  }, [addLine, disconnect, handleToolCall])
+  }, [addLine, disconnect, handleToolCall, mode])
 
   useEffect(() => disconnect, [disconnect])
 

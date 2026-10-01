@@ -20,7 +20,11 @@ _bearer = HTTPBearer(auto_error=False)
 
 CACHE_TTL_SECONDS = 60
 CACHE_MAX = 1000
-_valid_until: dict[str, float] = {}  # sha256(token) -> monotonic expiry
+_valid_until: dict[str, tuple[float, str]] = {}  # sha256(token) -> (monotonic expiry, user id)
+
+# Identity used for per-user data when sign-in is switched off (local dev).
+# Everyone shares it, so never rely on it for privacy in production.
+LOCAL_USER = "local"
 
 # Brute-force throttle: max failed logins per client within the window. The
 # platform rate-limits by IP too, but all our traffic shares one IP, so
@@ -65,16 +69,18 @@ async def platform_login(
     return res.json()["access_token"]
 
 
-async def verify_platform_token(
+async def resolve_platform_user(
     settings: Settings,
     token: str,
     transport: httpx.AsyncBaseTransport | None = None,
     now: float | None = None,
-) -> bool:
+) -> str | None:
+    """The platform user id behind this token, or None if the token is invalid."""
     t = time.monotonic() if now is None else now
     key = hashlib.sha256(token.encode()).hexdigest()
-    if _valid_until.get(key, 0) > t:
-        return True
+    cached = _valid_until.get(key)
+    if cached and cached[0] > t:
+        return cached[1]
     async with _platform(settings, transport) as client:
         try:
             res = await client.get(
@@ -83,17 +89,30 @@ async def verify_platform_token(
         except httpx.RequestError:
             raise _unavailable("Cannot reach the sign-in service")
     if res.status_code == 200:
+        try:
+            user_id = str(res.json()["id"])
+        except (ValueError, KeyError, TypeError):
+            raise _unavailable("Sign-in service returned an unexpected response")
         if len(_valid_until) >= CACHE_MAX:
-            for k in [k for k, v in _valid_until.items() if v <= t]:
+            for k in [k for k, v in _valid_until.items() if v[0] <= t]:
                 del _valid_until[k]
             if len(_valid_until) >= CACHE_MAX:
                 _valid_until.clear()
-        _valid_until[key] = t + CACHE_TTL_SECONDS
-        return True
+        _valid_until[key] = (t + CACHE_TTL_SECONDS, user_id)
+        return user_id
     if res.status_code in (401, 403):
         _valid_until.pop(key, None)
-        return False
+        return None
     raise _unavailable("Sign-in service error")
+
+
+async def verify_platform_token(
+    settings: Settings,
+    token: str,
+    transport: httpx.AsyncBaseTransport | None = None,
+    now: float | None = None,
+) -> bool:
+    return await resolve_platform_user(settings, token, transport, now) is not None
 
 
 def check_throttle(client: str, now: float | None = None) -> None:
@@ -115,16 +134,21 @@ def clear_failures(client: str) -> None:
 
 async def require_auth(
     creds: HTTPAuthorizationCredentials | None = Depends(_bearer),
-) -> None:
+) -> str:
+    """Gate for every protected route. Returns the caller's user id (LOCAL_USER
+    when sign-in is disabled), so routes that own per-user data can depend on
+    it too - FastAPI runs it once per request."""
     settings = get_settings()
     if not settings.auth_enabled:
-        return
-    if creds is None or not await verify_platform_token(settings, creds.credentials):
+        return LOCAL_USER
+    user_id = await resolve_platform_user(settings, creds.credentials) if creds else None
+    if user_id is None:
         raise HTTPException(
             status_code=401,
             detail="Authentication required",
             headers={"WWW-Authenticate": "Bearer"},
         )
+    return user_id
 
 
 async def require_token(

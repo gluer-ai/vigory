@@ -1,5 +1,8 @@
 import { authHeaders, notifyAuthExpired } from './auth'
 import type {
+  AgentChatResponse,
+  AgentOp,
+  AgentOpsResponse,
   ClassDef,
   ClassifyEntitiesResponse,
   CommitResult,
@@ -15,6 +18,10 @@ import type {
   LinkDef,
   ScopeResponse,
   SuggestEntityResponse,
+  Sandbox,
+  SandboxEdgeData,
+  SandboxNodeData,
+  SandboxSummary,
   VoiceSessionResponse,
   VoiceToolResult,
 } from './types'
@@ -48,6 +55,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     const body = await res.json().catch(() => ({ detail: res.statusText }))
     throw new ApiError(res.status, body.detail ?? res.statusText)
   }
+  if (res.status === 204) return undefined as T
   return res.json()
 }
 
@@ -68,8 +76,11 @@ async function requestForm<T>(path: string, form: FormData): Promise<T> {
 }
 
 /** The voice session POSTs a raw SDP offer (not JSON) and gets JSON back. */
-async function createVoiceSession(sdpOffer: string): Promise<VoiceSessionResponse> {
-  const res = await fetch(`${BASE_URL}/voice/session`, {
+async function createVoiceSession(
+  sdpOffer: string,
+  mode: 'kb' | 'sandbox' = 'kb',
+): Promise<VoiceSessionResponse> {
+  const res = await fetch(`${BASE_URL}/voice/session?mode=${mode}`, {
     method: 'POST',
     headers: { 'content-type': 'application/sdp', ...authHeaders() },
     body: sdpOffer,
@@ -93,6 +104,49 @@ export const authApi = {
 }
 
 export const api = {
+  listSandboxes: () => request<SandboxSummary[]>('/sandbox'),
+  createSandbox: (name: string, triggerEntityId?: string, hops = 2) =>
+    request<Sandbox>('/sandbox', {
+      method: 'POST',
+      body: JSON.stringify({ name, trigger_entity_id: triggerEntityId || null, hops }),
+    }),
+  getSandbox: (id: string) => request<Sandbox>(`/sandbox/${encodeURIComponent(id)}`),
+  saveSandbox: (
+    id: string,
+    body: { name?: string; nodes: SandboxNodeData[]; edges: SandboxEdgeData[]; version: number },
+  ) =>
+    request<Sandbox>(`/sandbox/${encodeURIComponent(id)}`, {
+      method: 'PUT',
+      body: JSON.stringify(body),
+    }),
+  deleteSandbox: (id: string) =>
+    request<void>(`/sandbox/${encodeURIComponent(id)}`, { method: 'DELETE' }),
+  agentChat: (
+    canvas: { nodes: SandboxNodeData[]; edges: SandboxEdgeData[]; container: string | null },
+    message: string,
+    history: { role: 'user' | 'assistant'; text: string }[],
+  ) =>
+    request<AgentChatResponse>('/sandbox/agent/chat', {
+      method: 'POST',
+      body: JSON.stringify({ ...canvas, message, history }),
+    }),
+  agentOps: (
+    canvas: { nodes: SandboxNodeData[]; edges: SandboxEdgeData[]; container: string | null },
+    ops: AgentOp[],
+  ) =>
+    request<AgentOpsResponse>('/sandbox/agent/ops', {
+      method: 'POST',
+      body: JSON.stringify({ ...canvas, ops }),
+    }),
+  agentDescribe: (canvas: {
+    nodes: SandboxNodeData[]
+    edges: SandboxEdgeData[]
+    container: string | null
+  }) =>
+    request<{ summary: string }>('/sandbox/agent/describe', {
+      method: 'POST',
+      body: JSON.stringify(canvas),
+    }),
   getVoiceStatus: () => request<{ configured: boolean }>('/voice/status'),
   createVoiceSession,
   callVoiceTool: (name: string, args: Record<string, unknown>) =>
