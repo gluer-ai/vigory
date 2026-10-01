@@ -11,12 +11,13 @@ import { IngestDialog } from './components/layout/IngestDialog'
 import { Inspector } from './components/layout/Inspector'
 import { LeftRail } from './components/layout/LeftRail'
 import { KnowledgeBasePage } from './components/knowledge/KnowledgeBasePage'
+import { VoicePage } from './components/voice/VoicePage'
 import { Drawer } from './components/ui/Drawer'
 import { api, ApiError } from './lib/api'
 import type { Entity, RelevanceAnnotation, ScopeResponse } from './lib/types'
 
 function App() {
-  const [page, setPage] = useState<'scope' | 'browse' | 'map' | 'feeds' | 'knowledge'>('scope')
+  const [page, setPage] = useState<'scope' | 'browse' | 'map' | 'feeds' | 'knowledge' | 'voice'>('scope')
   const [triggerEntityId, setTriggerEntityId] = useState('')
   const [hops, setHops] = useState(2)
   const [linkTypeFilter, setLinkTypeFilter] = useState<string[]>([])
@@ -76,6 +77,12 @@ function App() {
   }
 
   function handleMapSelectEntity(entityId: string) {
+    setPage('scope')
+    handleSelectEntity(entityId)
+  }
+
+  function handleOpenVoiceScenario(entityId: string, voiceHops: number) {
+    setHops(voiceHops)
     setPage('scope')
     handleSelectEntity(entityId)
   }
@@ -157,17 +164,27 @@ function App() {
           />
         }
         canvas={
-          page === 'browse' ? (
-            <BrowsePage onSelectEntity={handleBrowseSelectEntity} />
-          ) : page === 'map' ? (
-            <MapPage onSelectEntity={handleMapSelectEntity} />
-          ) : page === 'feeds' ? (
-            <FeedsPage />
-          ) : page === 'knowledge' ? (
-            <KnowledgeBasePage />
-          ) : (
-            canvasContent
-          )
+          <>
+            {/* Stays mounted while hidden so a live call and its unreviewed
+                proposals survive switching tabs (e.g. "Open in Scope"). */}
+            <div className={page === 'voice' ? 'h-full' : 'hidden'}>
+              <VoicePage
+                onOpenScenario={handleOpenVoiceScenario}
+                onCommitted={setTriggerEntityId}
+              />
+            </div>
+            {page === 'browse' ? (
+              <BrowsePage onSelectEntity={handleBrowseSelectEntity} />
+            ) : page === 'map' ? (
+              <MapPage onSelectEntity={handleMapSelectEntity} />
+            ) : page === 'feeds' ? (
+              <FeedsPage />
+            ) : page === 'knowledge' ? (
+              <KnowledgeBasePage />
+            ) : page === 'scope' ? (
+              canvasContent
+            ) : null}
+          </>
         }
         drawer={
           <Drawer

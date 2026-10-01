@@ -169,3 +169,40 @@ railway config apply    # apply after confirming
   currently ship inside `backend/requirements.txt` and therefore inside the
   production image. They're small; split into a `requirements-dev.txt` later
   if image size becomes a concern.
+
+## Sign-in and voice agent
+
+Users sign in with their **voice platform account** (Railway project
+`easygoing-comfort`, service `gluer-backend`). The Vigory backend relays the
+login to the platform and then validates each request's bearer token by
+asking the platform (`GET /api/v1/auth/me`; results cached for 60 s). If the
+platform is unreachable, requests fail closed with 503. The Voice tab runs the
+call as the signed-in user, so Vigory stores no platform credentials and the
+platform needs no changes.
+
+1. In the platform, create a **premium-tier** agent and note its UUID. WebRTC
+   voice is premium-only. The signed-in user's own OpenAI key/workspace is
+   used for the call.
+2. Set the variables on the Vigory `backend` service:
+
+   ```
+   railway variables --service backend \
+     --set VOICE_API_URL=https://gluer-backend-development.up.railway.app \
+     --set VOICE_AGENT_ID=<agent uuid> \
+     --set AUTH_MODE=platform
+   ```
+
+   `VOICE_WORKSPACE_ID` is optional. **Set `AUTH_MODE=platform`**: while it is
+   empty the API is open to anyone who can reach it.
+3. The frontend must be served over HTTPS for microphone access (Railway
+   domains are).
+
+Notes:
+- Platform tokens last 30 minutes. When one expires, the app returns to the
+  sign-in form (an active call ends; unreviewed proposals are lost).
+- Sign-in attempts are limited to 5 failures/minute per client.
+- The agent can search the graph, build scenarios (`build_scenario`) and
+  *propose* ingestions; proposals appear in the Voice tab and only reach the
+  graph when you commit them.
+- Transcripts are saved back to the platform only if the agent belongs to the
+  signed-in user (best effort; failure is ignored).

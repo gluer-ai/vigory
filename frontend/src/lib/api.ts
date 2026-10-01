@@ -1,3 +1,4 @@
+import { authHeaders, notifyAuthExpired } from './auth'
 import type {
   ClassDef,
   ClassifyEntitiesResponse,
@@ -14,6 +15,8 @@ import type {
   LinkDef,
   ScopeResponse,
   SuggestEntityResponse,
+  VoiceSessionResponse,
+  VoiceToolResult,
 } from './types'
 
 const BASE_URL = import.meta.env.VITE_API_BASE_URL ?? 'http://localhost:8000'
@@ -30,7 +33,7 @@ class ApiError extends Error {
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(`${BASE_URL}${path}`, {
     ...init,
-    headers: { 'content-type': 'application/json', ...init?.headers },
+    headers: { 'content-type': 'application/json', ...authHeaders(), ...init?.headers },
     // Without this, a request that never gets a response (a stalled proxy,
     // a backend that hung) leaves its caller's promise pending forever —
     // no rejection ever fires, so a "Loading…" UI state has no way to
@@ -40,6 +43,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     // ontology system prompt and can legitimately take a while.
     signal: init?.signal ?? AbortSignal.timeout(60000),
   })
+  if (res.status === 401 && authHeaders().authorization) notifyAuthExpired()
   if (!res.ok) {
     const body = await res.json().catch(() => ({ detail: res.statusText }))
     throw new ApiError(res.status, body.detail ?? res.statusText)
@@ -50,7 +54,12 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 async function requestForm<T>(path: string, form: FormData): Promise<T> {
   // No content-type header here — the browser sets the multipart boundary
   // itself; request()'s forced 'application/json' would corrupt the body.
-  const res = await fetch(`${BASE_URL}${path}`, { method: 'POST', body: form })
+  const res = await fetch(`${BASE_URL}${path}`, {
+    method: 'POST',
+    body: form,
+    headers: authHeaders(),
+  })
+  if (res.status === 401 && authHeaders().authorization) notifyAuthExpired()
   if (!res.ok) {
     const body = await res.json().catch(() => ({ detail: res.statusText }))
     throw new ApiError(res.status, body.detail ?? res.statusText)
@@ -58,7 +67,48 @@ async function requestForm<T>(path: string, form: FormData): Promise<T> {
   return res.json()
 }
 
+/** The voice session POSTs a raw SDP offer (not JSON) and gets JSON back. */
+async function createVoiceSession(sdpOffer: string): Promise<VoiceSessionResponse> {
+  const res = await fetch(`${BASE_URL}/voice/session`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/sdp', ...authHeaders() },
+    body: sdpOffer,
+    signal: AbortSignal.timeout(60000),
+  })
+  if (res.status === 401 && authHeaders().authorization) notifyAuthExpired()
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({ detail: res.statusText }))
+    throw new ApiError(res.status, body.detail ?? res.statusText)
+  }
+  return res.json()
+}
+
+export const authApi = {
+  status: () => request<{ enabled: boolean }>('/auth/status'),
+  login: (email: string, password: string) =>
+    request<{ token: string }>('/auth/login', {
+      method: 'POST',
+      body: JSON.stringify({ email, password }),
+    }),
+}
+
 export const api = {
+  getVoiceStatus: () => request<{ configured: boolean }>('/voice/status'),
+  createVoiceSession,
+  callVoiceTool: (name: string, args: Record<string, unknown>) =>
+    request<VoiceToolResult>(`/voice/tools/${encodeURIComponent(name)}`, {
+      method: 'POST',
+      body: JSON.stringify({ arguments: args }),
+    }),
+  saveVoiceTranscript: (sessionId: string, transcript: string, durationSeconds: number) =>
+    request<{ saved: boolean }>('/voice/transcript', {
+      method: 'POST',
+      body: JSON.stringify({
+        session_id: sessionId,
+        transcript,
+        duration_seconds: durationSeconds,
+      }),
+    }),
   getClasses: () => request<ClassDef[]>('/schema/classes'),
   getLinkDefs: () => request<LinkDef[]>('/schema/links'),
   getEntity: (id: string) => request<Entity>(`/entities/${encodeURIComponent(id)}`),

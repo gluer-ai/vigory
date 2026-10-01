@@ -1,4 +1,4 @@
-import { FileText, LayoutGrid, MapIcon, PlusCircle, RadioTower, Sparkles, Waypoints } from 'lucide-react'
+import { FileText, LayoutGrid, MapIcon, Mic, PlusCircle, RadioTower, Sparkles, Waypoints } from 'lucide-react'
 import { useEffect, useState } from 'react'
 import { api } from '../../lib/api'
 import type { LinkDef } from '../../lib/types'
@@ -8,8 +8,8 @@ import { Stepper } from '../ui/Stepper'
 import { EntitySearch } from './EntitySearch'
 
 interface LeftRailProps {
-  page: 'scope' | 'browse' | 'map' | 'feeds' | 'knowledge'
-  onPageChange: (page: 'scope' | 'browse' | 'map' | 'feeds' | 'knowledge') => void
+  page: 'scope' | 'browse' | 'map' | 'feeds' | 'knowledge' | 'voice'
+  onPageChange: (page: 'scope' | 'browse' | 'map' | 'feeds' | 'knowledge' | 'voice') => void
   triggerEntityId: string
   onTriggerChange: (id: string) => void
   hops: number
@@ -72,6 +72,7 @@ export function LeftRail({
             ['map', MapIcon, 'Map'],
             ['feeds', RadioTower, 'Feeds'],
             ['knowledge', FileText, 'Knowledge'],
+            ['voice', Mic, 'Voice'],
           ] as const
         ).map(([id, Icon, label]) => (
           <button

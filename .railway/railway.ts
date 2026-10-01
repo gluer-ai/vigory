@@ -73,6 +73,13 @@ export default defineRailway(() => {
       OPENSKY_CLIENT_ID: preserve(),
       OPENSKY_CLIENT_SECRET: preserve(),
       AISSTREAM_API_KEY: preserve(),
+      // Voice platform (separate Railway project easygoing-comfort). It is
+      // also the identity provider: AUTH_MODE=platform makes every API route
+      // require a valid platform sign-in. Leave VOICE_* unset to disable voice.
+      VOICE_API_URL: preserve(),
+      VOICE_AGENT_ID: preserve(),
+      VOICE_WORKSPACE_ID: preserve(),
+      AUTH_MODE: preserve(),
     },
   });
 

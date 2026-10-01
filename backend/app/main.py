@@ -1,9 +1,10 @@
 """FastAPI app factory."""
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+from fastapi import Depends, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from app.auth import require_auth
 from app.config import get_settings
 from app.db.neo4j_client import close_driver, verify_connectivity
 
@@ -32,15 +33,15 @@ def create_app() -> FastAPI:
         neo4j_ok = await verify_connectivity()
         return {"status": "ok" if neo4j_ok else "degraded", "neo4j": neo4j_ok}
 
-    from app.api import documents, entities, feeds, ingest, links, schema, scenarios
+    from app.api import auth as auth_api
+    from app.api import documents, entities, feeds, ingest, links, scenarios, schema, voice
 
-    app.include_router(entities.router)
-    app.include_router(links.router)
-    app.include_router(schema.router)
-    app.include_router(scenarios.router)
-    app.include_router(ingest.router)
-    app.include_router(documents.router)
-    app.include_router(feeds.router)
+    # /health and /auth/* stay public; everything else requires a token
+    # whenever AUTH_PASSWORD is set.
+    app.include_router(auth_api.router)
+    protected = [Depends(require_auth)]
+    for module in (entities, links, schema, scenarios, ingest, documents, feeds, voice):
+        app.include_router(module.router, dependencies=protected)
 
     return app
 

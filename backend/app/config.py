@@ -60,7 +60,27 @@ class Settings(BaseSettings):
     # key only raises the list-endpoint rate limit.
     tfl_app_key: str = ""
 
+    # Voice agent platform (gluer-platform, deployed separately on Railway).
+    # It is also the identity provider: users sign in with their platform
+    # account and the voice session runs as that user.
+    voice_api_url: str = ""  # e.g. https://gluer-backend-development.up.railway.app
+    voice_agent_id: str = ""  # UUID of a premium-tier agent
+    voice_workspace_id: str = ""  # optional
+
+    # Access control. AUTH_MODE=platform requires every route except /health
+    # and /auth/* to carry a valid platform bearer token. Empty disables auth
+    # (local dev only) - always set it in production.
+    auth_mode: str = ""
+
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
+
+    @property
+    def auth_enabled(self) -> bool:
+        return self.auth_mode.strip().lower() == "platform"
+
+    @property
+    def voice_configured(self) -> bool:
+        return bool(self.voice_api_url and self.voice_agent_id)
 
     @property
     def cors_origin_list(self) -> list[str]:

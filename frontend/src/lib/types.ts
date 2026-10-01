@@ -165,3 +165,27 @@ export interface Document {
   batch_id: string | null
   uploaded_at: string
 }
+
+export interface VoiceTool {
+  type: 'function'
+  name: string
+  description: string
+  parameters: Record<string, unknown>
+}
+
+export interface VoiceSessionResponse {
+  sdp: string
+  agent: { name?: string; voice?: string; initial_greeting?: string | null }
+  instructions: string
+  tools: VoiceTool[]
+}
+
+/** `output` is what the voice model hears; `ui` is only for the panel. */
+export type VoiceUiEffect =
+  | { type: 'batch'; batch: IngestBatch }
+  | { type: 'scenario'; trigger_entity_id: string; hops: number }
+
+export interface VoiceToolResult {
+  output: Record<string, unknown>
+  ui?: VoiceUiEffect
+}
