@@ -9,7 +9,7 @@ from app.models.entity import EntityCreate
 from app.models.link import LinkCreate
 from app.ontology.validate import ValidationError, validate_entity, validate_link
 from app.services.entity_resolution import find_synonym_match
-from app.services.extraction_agent import classify_rejected_entities, extract_from_text
+from app.services.extraction_agent import extract_from_text, resolve_rejected
 
 router = APIRouter(prefix="/ingest", tags=["ingest"])
 
@@ -98,15 +98,21 @@ async def suggest_entity(
 
 @router.post("/{batch_id}/entities/classify")
 async def classify_entities(batch_id: str):
+    """Place rejected entities/links: map to existing ontology terms or let the
+    agent extend the ontology (new terms are validated and tagged
+    origin=extraction). Used by the review panel's bulk-create buttons."""
     driver = get_driver()
     async with driver.session() as session:
         batch = await _get_batch(session, batch_id)
-        rejected_entities = json.loads(batch.get("rejected_entities") or "[]")
         try:
-            classifications = await classify_rejected_entities(session, rejected_entities)
+            return await resolve_rejected(
+                session,
+                json.loads(batch["entities"]),
+                json.loads(batch.get("rejected_entities") or "[]"),
+                json.loads(batch.get("rejected_links") or "[]"),
+            )
         except LLMError as e:
             raise HTTPException(status_code=502, detail=str(e))
-        return {"classifications": classifications}
 
 
 @router.post("/{batch_id}/entities")

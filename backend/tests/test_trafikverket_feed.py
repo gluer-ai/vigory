@@ -12,10 +12,15 @@ from neo4j import AsyncGraphDatabase
 from app.config import get_settings
 from app.feeds.bbox import in_bbox
 from app.feeds.trafikverket import (
+    _announcements_to_entities,
     _cameras_to_entities,
     _situations_to_entities,
+    _station_coords,
+    _stations_to_entities,
+    poll_announcements,
     poll_cameras,
     poll_situations,
+    poll_stations,
 )
 from app.ontology.validate import validate_entity
 
@@ -74,9 +79,67 @@ def _camera_response(camera_id: str, point: str) -> dict:
     }
 
 
+def _station_response(signature: str, name: str, point: str) -> dict:
+    return {
+        "RESPONSE": {
+            "RESULT": [
+                {
+                    "TrainStation": [
+                        {
+                            "LocationSignature": signature,
+                            "AdvertisedLocationName": name,
+                            "CountyNo": [1],
+                            "Geometry": {"WGS84": point},
+                        }
+                    ]
+                }
+            ]
+        }
+    }
+
+
+def _announcement_response(activity_id: str, signature: str) -> dict:
+    return {
+        "RESPONSE": {
+            "RESULT": [
+                {
+                    "TrainAnnouncement": [
+                        {
+                            "ActivityId": activity_id,
+                            "ActivityType": "Avgang",
+                            "AdvertisedTrainIdent": "8195",
+                            "AdvertisedTimeAtLocation": "2026-09-09T17:48:00.000+02:00",
+                            "Canceled": False,
+                            "TrackAtLocation": "4",
+                            "LocationSignature": signature,
+                            "FromLocation": [{"LocationName": "Gä"}],
+                            "ToLocation": [{"LocationName": "Blgc"}],
+                        }
+                    ]
+                }
+            ]
+        }
+    }
+
+
 def _mock_client(response_json: dict) -> httpx.AsyncClient:
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(200, json=response_json)
+
+    return httpx.AsyncClient(transport=httpx.MockTransport(handler))
+
+
+def _mock_client_by_objecttype(responses: dict[str, dict]) -> httpx.AsyncClient:
+    """Dispatches to a different canned response depending on the query's
+    objecttype attribute — needed for pollers that make more than one
+    Trafikverket call per poll (e.g. announcements looking up stations)."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = request.content.decode()
+        for objecttype, response_json in responses.items():
+            if f'objecttype="{objecttype}"' in body:
+                return httpx.Response(200, json=response_json)
+        raise AssertionError(f"no mocked response for request: {body}")
 
     return httpx.AsyncClient(transport=httpx.MockTransport(handler))
 
@@ -135,6 +198,55 @@ def test_cameras_to_entities_maps_sweden_row():
     assert entity.entity_class == "EQUIPMENT"
     assert entity.entity_subclass == "EQUIPMENT.SENSOR_AND_SURVEILLANCE.TRAFFIC_CAMERA"
     assert entity.attrs["photo_url"].endswith("RoadConditionCamera_CAM-1.Jpeg?type=fullsize")
+
+
+def test_stations_to_entities_drops_out_of_sweden_row():
+    payload = _station_response("SLZ", "Salzburg", BERLIN)
+    stations = payload["RESPONSE"]["RESULT"][0]["TrainStation"]
+    assert _stations_to_entities(stations) == []
+
+
+def test_stations_to_entities_maps_sweden_row():
+    payload = _station_response("A", "Alingsås", STOCKHOLM)
+    stations = payload["RESPONSE"]["RESULT"][0]["TrainStation"]
+    entities = _stations_to_entities(stations)
+    assert len(entities) == 1
+    entity = entities[0]
+    assert entity.entity_id == "TRAFIKVERKET-STATION-A"
+    assert entity.entity_class == "FACILITY"
+    assert entity.entity_subclass == "FACILITY.TRANSPORT_NODE"
+    assert entity.label == "Alingsås"
+    assert entity.attrs["lat"] == pytest.approx(59.33)
+    assert entity.attrs["lon"] == pytest.approx(18.06)
+
+
+def test_station_coords_builds_signature_to_latlon_map():
+    payload = _station_response("A", "Alingsås", STOCKHOLM)
+    stations = payload["RESPONSE"]["RESULT"][0]["TrainStation"]
+    coords = _station_coords(stations)
+    assert coords == {"A": pytest.approx((59.33, 18.06))}
+
+
+def test_announcements_to_entities_drops_unknown_station():
+    payload = _announcement_response("ACT-1", "UNKNOWN")
+    announcements = payload["RESPONSE"]["RESULT"][0]["TrainAnnouncement"]
+    assert _announcements_to_entities(announcements, {}) == []
+
+
+def test_announcements_to_entities_maps_known_station():
+    payload = _announcement_response("ACT-1", "A")
+    announcements = payload["RESPONSE"]["RESULT"][0]["TrainAnnouncement"]
+    entities = _announcements_to_entities(announcements, {"A": (59.33, 18.06)})
+    assert len(entities) == 1
+    entity = entities[0]
+    assert entity.entity_id == "TRAFIKVERKET-TRAIN-ACT-1"
+    assert entity.entity_class == "EVENT"
+    assert entity.entity_subclass == "EVENT.MOVEMENT_AND_TRANSIT.RAIL_MOVEMENT"
+    assert entity.attrs["lat"] == pytest.approx(59.33)
+    assert entity.attrs["lon"] == pytest.approx(18.06)
+    assert entity.attrs["train_ident"] == "8195"
+    assert entity.attrs["activity_type"] == "Avgang"
+    assert entity.attrs["canceled"] is False
 
 
 @pytest.mark.asyncio

@@ -89,8 +89,17 @@ export interface EntityClassification {
   entity_class: string
 }
 
+export interface LinkTypeFix {
+  idx: number
+  link_type: string
+}
+
 export interface ClassifyEntitiesResponse {
   classifications: EntityClassification[]
+  /** Link types the agent resolved (existing, or newly added to the ontology). */
+  link_types: LinkTypeFix[]
+  added_classes: string[]
+  added_links: string[]
 }
 
 export interface CommitResult {

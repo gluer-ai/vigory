@@ -89,6 +89,20 @@ class FakeSession:
         return FakeSingleResult(None)
 
 
+NO_EXTENSION = {"entity_assignments": {}, "link_assignments": {}, "added_classes": [], "added_links": []}
+
+
+@pytest.fixture(autouse=True)
+def _no_ontology_extension(monkeypatch):
+    """Existing tests cover plain validation; the ontology-growth step has its
+    own tests (test_ontology_extension.py) and is stubbed out here."""
+
+    async def none(*a, **k):
+        return NO_EXTENSION
+
+    monkeypatch.setattr(extraction_agent_module, "extend_ontology", none)
+
+
 @pytest.mark.asyncio
 async def test_extract_rejects_bogus_terms_and_accepts_real_ones(monkeypatch):
     raw_llm_output = {
@@ -508,3 +522,87 @@ async def test_extraction_repairs_abbreviated_subclass_and_root(monkeypatch):
         ("PERSON.MILITARY_PERSONNEL", "PERSON")
     ]
     assert [r["row"]["label"] for r in result["rejected_entities"]] == ["Nowhere"]
+
+
+# ---- rejected rows get a second chance after the ontology grows ---------------
+
+
+async def test_rejected_rows_are_retried_with_extension_assignments(monkeypatch):
+    async def fake_json(system_prompt, user_prompt):
+        return {
+            "entities": [
+                {"entity_id": "E-1", "entity_class": "ORGANIZATION", "entity_subclass": "ORGANIZATION.MILITARY_FORMATION.TACTICAL_FORMATION",
+                 "label": "Acme", "confidence": "B2", "source_ref": "t"},
+                {"entity_id": "E-2", "entity_class": "EVENT", "entity_subclass": "EVENT.TRANSACTION.BANKRUPTCY_FILING",
+                 "label": "Acme bankruptcy", "confidence": "B2", "source_ref": "t"},
+            ],
+            "links": [
+                {"link_id": "L-1", "link_type": "member_of", "source_entity": "E-1", "target_entity": "E-2",
+                 "direction": "directed", "confidence": "B2", "source_ref": "t"},
+            ],
+        }
+
+    seen = {}
+
+    async def fake_extend(session, rejected_entities, rejected_links, endpoint_info=None):
+        seen["entities"] = [r["row"]["label"] for r in rejected_entities]
+        seen["links"] = len(rejected_links)
+        # the ontology "grew": the new class now exists for the validator
+        VALID_CLASS_KEYS.append("EVENT.TRANSACTION.BANKRUPTCY_FILING")
+        return {**NO_EXTENSION, "entity_assignments": {0: "EVENT.TRANSACTION.BANKRUPTCY_FILING"},
+                "added_classes": ["EVENT.TRANSACTION.BANKRUPTCY_FILING"]}
+
+    monkeypatch.setattr(extraction_agent_module, "complete_json", fake_json)
+    monkeypatch.setattr(extraction_agent_module, "extend_ontology", fake_extend)
+    try:
+        result = await extraction_agent_module._extract_and_validate(FakeSession(), "text")
+    finally:
+        VALID_CLASS_KEYS.remove("EVENT.TRANSACTION.BANKRUPTCY_FILING")
+
+    assert seen["entities"] == ["Acme bankruptcy"]
+    assert {e["label"] for e in result["valid_entities"]} == {"Acme", "Acme bankruptcy"}
+    assert len(result["valid_links"]) == 1  # link now has both endpoints
+    assert result["rejected_entities"] == [] and result["rejected_links"] == []
+
+
+async def test_extension_failure_leaves_rows_rejected_instead_of_failing(monkeypatch):
+    from app.llm.client import LLMError
+
+    async def fake_json(system_prompt, user_prompt):
+        return {"entities": [{"entity_id": "E-9", "entity_class": "X", "entity_subclass": "X.NOPE",
+                              "label": "Nope", "confidence": "B2", "source_ref": "t"}], "links": []}
+
+    async def boom(*a, **k):
+        raise LLMError("down")
+
+    monkeypatch.setattr(extraction_agent_module, "complete_json", fake_json)
+    monkeypatch.setattr(extraction_agent_module, "extend_ontology", boom)
+    result = await extraction_agent_module._extract_and_validate(FakeSession(), "text")
+    assert result["valid_entities"] == []
+    assert [r["row"]["label"] for r in result["rejected_entities"]] == ["Nope"]
+
+
+async def test_resolve_rejected_merges_extension_and_classifier_fallback(monkeypatch):
+    async def fake_extend(session, rejected_entities, rejected_links, endpoint_info=None):
+        assert endpoint_info["E-1"] == "Valid (PERSON)" and endpoint_info["P-temp2"] == "Boom (Event)"
+        return {"entity_assignments": {1: "EVENT.TRANSACTION.BANKRUPTCY_FILING"},
+                "link_assignments": {0: "acquired"}, "added_classes": ["X"], "added_links": ["acquired"]}
+
+    async def fake_classify(session, rejected):
+        assert [r["row"]["label"] for r in rejected] == ["A", "C"]  # the unplaced ones only
+        return [{"idx": 1, "entity_subclass": "PERSON.MILITARY_PERSONNEL", "entity_class": "PERSON"}]
+
+    monkeypatch.setattr(extraction_agent_module, "extend_ontology", fake_extend)
+    monkeypatch.setattr(extraction_agent_module, "classify_rejected_entities", fake_classify)
+    rejected = [{"row": {"label": "A", "entity_id": "P-temp1"}},
+                {"row": {"label": "Boom", "entity_id": "P-temp2", "entity_class": "Event"}},
+                {"row": {"label": "C", "entity_id": "P-temp3"}}]
+    out = await extraction_agent_module.resolve_rejected(
+        FakeSession(), [{"entity_id": "E-1", "label": "Valid", "entity_class": "PERSON"}], rejected,
+        [{"row": {"link_type": "acquired_x"}}])
+    assert out["classifications"] == [
+        {"idx": 1, "entity_subclass": "EVENT.TRANSACTION.BANKRUPTCY_FILING", "entity_class": "EVENT"},
+        {"idx": 2, "entity_subclass": "PERSON.MILITARY_PERSONNEL", "entity_class": "PERSON"},
+    ]
+    assert out["link_types"] == [{"idx": 0, "link_type": "acquired"}]
+    assert out["added_classes"] == ["X"]

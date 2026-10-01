@@ -643,11 +643,18 @@ async def test_classify_entities_returns_classifications(monkeypatch):
     session = _FakeSession(batch=_make_batch(rejected_entities=json.dumps(rejected)))
     monkeypatch.setattr(ingest_module, "get_driver", lambda: _FakeDriver(session))
 
-    async def fake_classify(session, rejected_entities):
+    async def fake_resolve(session, batch_entities, rejected_entities, rejected_links):
         assert rejected_entities == rejected
-        return [{"idx": 0, "entity_subclass": "PERSON.MILITARY_PERSONNEL", "entity_class": "PERSON"}]
+        return {
+            "classifications": [
+                {"idx": 0, "entity_subclass": "PERSON.MILITARY_PERSONNEL", "entity_class": "PERSON"}
+            ],
+            "link_types": [{"idx": 0, "link_type": "acquired"}],
+            "added_classes": ["EVENT.TRANSACTION.BANKRUPTCY_FILING"],
+            "added_links": ["acquired"],
+        }
 
-    monkeypatch.setattr(ingest_module, "classify_rejected_entities", fake_classify)
+    monkeypatch.setattr(ingest_module, "resolve_rejected", fake_resolve)
 
     app = create_app()
     transport = httpx.ASGITransport(app=app)
@@ -656,7 +663,10 @@ async def test_classify_entities_returns_classifications(monkeypatch):
 
     assert resp.status_code == 200
     assert resp.json() == {
-        "classifications": [{"idx": 0, "entity_subclass": "PERSON.MILITARY_PERSONNEL", "entity_class": "PERSON"}]
+        "classifications": [{"idx": 0, "entity_subclass": "PERSON.MILITARY_PERSONNEL", "entity_class": "PERSON"}],
+        "link_types": [{"idx": 0, "link_type": "acquired"}],
+        "added_classes": ["EVENT.TRANSACTION.BANKRUPTCY_FILING"],
+        "added_links": ["acquired"],
     }
 
 
@@ -683,10 +693,10 @@ async def test_classify_entities_502s_on_llm_error(monkeypatch):
     session = _FakeSession(batch=_make_batch(rejected_entities=json.dumps([{"row": {}, "reason": "x"}])))
     monkeypatch.setattr(ingest_module, "get_driver", lambda: _FakeDriver(session))
 
-    async def fake_classify(session, rejected_entities):
+    async def fake_resolve(session, batch_entities, rejected_entities, rejected_links):
         raise LLMError("boom")
 
-    monkeypatch.setattr(ingest_module, "classify_rejected_entities", fake_classify)
+    monkeypatch.setattr(ingest_module, "resolve_rejected", fake_resolve)
 
     app = create_app()
     transport = httpx.ASGITransport(app=app)

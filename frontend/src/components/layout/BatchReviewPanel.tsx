@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import type { ReactNode } from 'react'
 import { api, ApiError } from '../../lib/api'
 import type { ClassDef, EntityCreateInput, IngestBatch, LinkCreateInput } from '../../lib/types'
@@ -116,6 +116,11 @@ export function BatchReviewPanel({
     })
   }
 
+  // link_type fixes from the agent (idx in batch.rejected_links -> type),
+  // gathered when entities are classified so one round trip serves both buttons.
+  const linkTypeFixes = useRef<Record<number, string>>({})
+  const linkFixesFetched = useRef(false)
+
   async function handleBulkCreate() {
     // Auto-classify anything the reviewer didn't pick manually, in one LLM
     // call for the whole set, so "Create N entities" is a single click
@@ -128,7 +133,13 @@ export function BatchReviewPanel({
     if (needsClassification) {
       setClassifying(true)
       try {
-        const { classifications } = await api.classifyRejectedEntities(batch.batch_id)
+        const { classifications, link_types, added_classes } = await api.classifyRejectedEntities(
+          batch.batch_id,
+        )
+        for (const f of link_types) linkTypeFixes.current[f.idx] = f.link_type
+        linkFixesFetched.current = true
+        // New classes may have been added to the ontology; refresh the pickers.
+        if (added_classes.length > 0) loadClasses()
         const guessByIdx = new Map(classifications.map((c) => [c.idx, c.entity_subclass]))
         const merged = { ...subclassByRow }
         for (const { idx } of rejectedEntities) {
@@ -200,6 +211,20 @@ export function BatchReviewPanel({
   async function handleBulkCreateLinks() {
     setBulkLinkCreating(true)
     setLinkSuccessMessage('')
+    // Rows whose link_type isn't in the ontology can't be created as-is. Ask
+    // the agent to map them to a real type, or add one, before submitting.
+    // (A row's stored reason can be about a missing endpoint and hide a bad
+    // type, so ask once per panel rather than keying off the reason text.)
+    const needsFix = !linkFixesFetched.current && rejectedLinks.length > 0
+    if (needsFix) {
+      try {
+        const { link_types } = await api.classifyRejectedEntities(batch.batch_id)
+        for (const f of link_types) linkTypeFixes.current[f.idx] = f.link_type
+        linkFixesFetched.current = true
+      } catch {
+        // Fail open: rows keep their original type and surface their own error below.
+      }
+    }
     const newErrors: Record<number, string> = {}
     let attempted = 0
     let succeeded = 0
@@ -208,7 +233,7 @@ export function BatchReviewPanel({
       attempted += 1
       const payload: LinkCreateInput = {
         link_id: str(row.link_id) || `L-${idx}-${Date.now()}`,
-        link_type: str(row.link_type),
+        link_type: linkTypeFixes.current[idx] ?? str(row.link_type),
         source_entity: str(row.source_entity),
         target_entity: str(row.target_entity),
         direction: row.direction === 'symmetric' ? 'symmetric' : 'directed',

@@ -6,14 +6,18 @@ current ClassDef/LinkDef ontology and stored as a pending IngestBatch node
 with status=proposed for human review via POST /ingest/{batch_id}/commit.
 """
 import json
+import logging
 import uuid
 
 from neo4j import AsyncSession
 
-from app.llm.client import complete_json
+from app.llm.client import LLMError, complete_json
 from app.models.entity import EntityCreate
 from app.models.link import LinkCreate
 from app.ontology.validate import ValidationError, validate_entity, validate_link
+from app.services.ontology_extension import extend_ontology, normalize_link_type
+
+logger = logging.getLogger(__name__)
 
 PROMPT_TEMPLATE = """You are an intelligence analyst assistant. Extract entities and \
 relationships (links) from the given scenario text as strict JSON:
@@ -199,21 +203,35 @@ async def _extract_and_validate(
     )
     raw = await complete_json(system_prompt, text)
 
-    # Belt-and-suspenders: even if the model emits a documented inverse name
-    # despite the instructions (e.g. "operated_by" instead of "operator_of"),
-    # normalize it to the canonical forward type and swap source/target
-    # rather than rejecting a link the ontology actually supports.
-    for row in raw.get("links", []):
-        forward = inverse_to_forward.get(row.get("link_type"))
-        if forward:
-            row["link_type"] = forward
-            row["source_entity"], row["target_entity"] = (
-                row.get("target_entity"),
-                row.get("source_entity"),
-            )
+    def normalize_links(rows: list[dict], inverse_map: dict[str, str]) -> None:
+        # The model sometimes echoes the prompt's "type (Domain -> Range)" line,
+        # or emits a documented inverse name (e.g. "operated_by" instead of
+        # "operator_of"). Clean the type, and for an inverse use the canonical
+        # forward type with source/target swapped, rather than rejecting a link
+        # the ontology actually supports.
+        for row in rows:
+            cleaned = normalize_link_type(row.get("link_type"))
+            if cleaned:
+                row["link_type"] = cleaned
+            forward = inverse_map.get(row.get("link_type"))
+            if forward:
+                row["link_type"] = forward
+                row["source_entity"], row["target_entity"] = (
+                    row.get("target_entity"),
+                    row.get("source_entity"),
+                )
 
-    valid_entities, rejected_entities = [], []
-    for row in raw.get("entities", []):
+    normalize_links(raw.get("links", []), inverse_to_forward)
+
+    valid_entities: list[dict] = []
+    valid_links: list[dict] = []
+    # A link's endpoints may be a brand-new entity from this batch, or a real
+    # entity_id the model chose to reuse from EXISTING_ENTITIES - both are
+    # valid targets; anything else is a hallucinated reference.
+    class_by_id: dict[str, str] = {e["entity_id"]: e["entity_class"] for e in existing_entities}
+
+    async def try_entity(row: dict) -> str | None:
+        """Validate one entity row; returns a rejection reason, or None if accepted."""
         try:
             resolved = resolve_class_key(row.get("entity_subclass"), all_class_keys)
             if resolved:
@@ -221,18 +239,14 @@ async def _extract_and_validate(
                 row["entity_class"] = resolved.split(".")[0]
             entity = EntityCreate(**row)
             await validate_entity(session, entity)
-            valid_entities.append(entity.model_dump(mode="json"))
         except (ValidationError, ValueError, TypeError) as e:
-            rejected_entities.append({"row": row, "reason": str(e)})
+            return str(e)
+        dumped = entity.model_dump(mode="json")
+        valid_entities.append(dumped)
+        class_by_id[dumped["entity_id"]] = dumped["entity_class"]
+        return None
 
-    # A link's endpoints may be a brand-new entity from this batch, or a real
-    # entity_id the model chose to reuse from EXISTING_ENTITIES — both are
-    # valid targets; anything else is a hallucinated reference.
-    class_by_id = {e["entity_id"]: e["entity_class"] for e in valid_entities}
-    class_by_id.update({e["entity_id"]: e["entity_class"] for e in existing_entities})
-
-    valid_links, rejected_links = [], []
-    for row in raw.get("links", []):
+    async def try_link(row: dict) -> str | None:
         try:
             link = LinkCreate(**row)
             if link.source_entity not in class_by_id or link.target_entity not in class_by_id:
@@ -243,9 +257,63 @@ async def _extract_and_validate(
             await validate_link(
                 session, link, class_by_id[link.source_entity], class_by_id[link.target_entity]
             )
-            valid_links.append(link.model_dump(mode="json"))
         except (ValidationError, ValueError, TypeError) as e:
-            rejected_links.append({"row": row, "reason": str(e)})
+            return str(e)
+        valid_links.append(link.model_dump(mode="json"))
+        return None
+
+    rejected_entities: list[dict] = []
+    for row in raw.get("entities", []):
+        reason = await try_entity(row)
+        if reason:
+            rejected_entities.append({"row": row, "reason": reason})
+    rejected_links: list[dict] = []
+    for row in raw.get("links", []):
+        reason = await try_link(row)
+        if reason:
+            rejected_links.append({"row": row, "reason": reason})
+
+    # Nothing in the ontology fits these rows. Let the agent map them to
+    # existing terms or extend the ontology (validated, tagged origin=extraction),
+    # then give every rejected row one more chance. Fail open: if this step
+    # errors, the rows simply stay rejected for manual review.
+    if rejected_entities or rejected_links:
+        try:
+            ext = await extend_ontology(
+                session,
+                rejected_entities,
+                rejected_links,
+                endpoint_info=_endpoint_info(raw, existing_entities),
+            )
+        except LLMError as e:
+            logger.warning("ontology extension skipped: %s", e)
+            ext = None
+        if ext and (ext["entity_assignments"] or ext["link_assignments"]):
+            all_class_keys = await _fetch_all_class_keys(session)
+            _, _, inverse_to_forward = await _fetch_ontology_vocab(session)
+
+            still_rejected_entities = []
+            for idx, item in enumerate(rejected_entities):
+                row = item["row"]
+                if idx in ext["entity_assignments"]:
+                    row["entity_subclass"] = ext["entity_assignments"][idx]
+                reason = await try_entity(row)
+                if reason:
+                    still_rejected_entities.append({"row": row, "reason": reason})
+            rejected_entities = still_rejected_entities
+
+            # Retry every rejected link, not just reassigned ones: many were
+            # rejected only because an endpoint entity was, which may now be valid.
+            for idx, item in enumerate(rejected_links):
+                if idx in ext["link_assignments"]:
+                    item["row"]["link_type"] = ext["link_assignments"][idx]
+            normalize_links([i["row"] for i in rejected_links], inverse_to_forward)
+            still_rejected_links = []
+            for item in rejected_links:
+                reason = await try_link(item["row"])
+                if reason:
+                    still_rejected_links.append({"row": item["row"], "reason": reason})
+            rejected_links = still_rejected_links
 
     return {
         "valid_entities": valid_entities,
@@ -253,6 +321,15 @@ async def _extract_and_validate(
         "valid_links": valid_links,
         "rejected_links": rejected_links,
     }
+
+
+def _endpoint_info(raw: dict, existing_entities: list[dict]) -> dict[str, str]:
+    """entity_id -> "Label (ROOT)" for readable lines in the extension prompt."""
+    info = {e["entity_id"]: f"{e['label']} ({e['entity_class']})" for e in existing_entities}
+    for row in raw.get("entities", []):
+        if isinstance(row, dict) and row.get("entity_id"):
+            info[row["entity_id"]] = f"{row.get('label', '?')} ({row.get('entity_class', '?')})"
+    return info
 
 
 CLASSIFY_PROMPT_TEMPLATE = """You are re-classifying entities that were rejected from a batch because \
@@ -330,6 +407,54 @@ async def classify_rejected_entities(session: AsyncSession, rejected_entities: l
             if idx in valid_indices and key in valid_keys:
                 results.append({"idx": idx, "entity_subclass": key, "entity_class": key.split(".")[0]})
     return results
+
+
+async def resolve_rejected(
+    session: AsyncSession,
+    batch_entities: list[dict],
+    rejected_entities: list[dict],
+    rejected_links: list[dict],
+) -> dict:
+    """Backs the review panel's "Create N entities" / "Create N links" buttons.
+
+    Lets the extraction agent map each rejected row to an existing term or
+    extend the ontology for it (see ontology_extension), then falls back to
+    the leaf-key classifier for any entity still unplaced. Returns
+    {"classifications": [{idx, entity_subclass, entity_class}],
+     "link_types": [{idx, link_type}], "added_classes": [...], "added_links": [...]}
+    where idx indexes the passed rejected_* lists. Ontology extension failing
+    is non-fatal; the classifier's LLMError still propagates.
+    """
+    endpoint_info = {e["entity_id"]: f"{e['label']} ({e['entity_class']})" for e in batch_entities}
+    for r in rejected_entities:
+        row = r.get("row", {})
+        if row.get("entity_id"):
+            endpoint_info[row["entity_id"]] = f"{row.get('label', '?')} ({row.get('entity_class', '?')})"
+
+    ext = {"entity_assignments": {}, "link_assignments": {}, "added_classes": [], "added_links": []}
+    if rejected_entities or rejected_links:
+        try:
+            ext = await extend_ontology(session, rejected_entities, rejected_links, endpoint_info)
+        except LLMError as e:
+            logger.warning("ontology extension skipped: %s", e)
+
+    classifications = [
+        {"idx": idx, "entity_subclass": key, "entity_class": key.split(".")[0]}
+        for idx, key in ext["entity_assignments"].items()
+    ]
+    unplaced = [i for i in range(len(rejected_entities)) if i not in ext["entity_assignments"]]
+    if unplaced:
+        fallback = await classify_rejected_entities(session, [rejected_entities[i] for i in unplaced])
+        classifications += [{**c, "idx": unplaced[c["idx"]]} for c in fallback]
+
+    return {
+        "classifications": sorted(classifications, key=lambda c: c["idx"]),
+        "link_types": [
+            {"idx": idx, "link_type": lt} for idx, lt in sorted(ext["link_assignments"].items())
+        ],
+        "added_classes": ext["added_classes"],
+        "added_links": ext["added_links"],
+    }
 
 
 async def extract_from_text(session: AsyncSession, text: str) -> dict:
