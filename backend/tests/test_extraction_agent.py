@@ -599,10 +599,12 @@ async def test_resolve_rejected_merges_extension_and_classifier_fallback(monkeyp
                 {"row": {"label": "C", "entity_id": "P-temp3"}}]
     out = await extraction_agent_module.resolve_rejected(
         FakeSession(), [{"entity_id": "E-1", "label": "Valid", "entity_class": "PERSON"}], rejected,
-        [{"row": {"link_type": "acquired_x"}}])
+        [{"row": {"link_type": "acquired_x"}},
+         {"row": {"link_type": "member_of (Person -> Organization)"}},  # malformed but cleanable
+         {"row": {"link_type": "nonsense (A -> B)"}}])                  # cleaned type not real
     assert out["classifications"] == [
         {"idx": 1, "entity_subclass": "EVENT.TRANSACTION.BANKRUPTCY_FILING", "entity_class": "EVENT"},
         {"idx": 2, "entity_subclass": "PERSON.MILITARY_PERSONNEL", "entity_class": "PERSON"},
     ]
-    assert out["link_types"] == [{"idx": 0, "link_type": "acquired"}]
+    assert out["link_types"] == [{"idx": 0, "link_type": "acquired"}, {"idx": 1, "link_type": "member_of"}]
     assert out["added_classes"] == ["X"]

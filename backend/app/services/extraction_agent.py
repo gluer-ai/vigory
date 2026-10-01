@@ -454,11 +454,23 @@ async def resolve_rejected(
         fallback = await classify_rejected_entities(session, [rejected_entities[i] for i in unplaced])
         classifications += [{**c, "idx": unplaced[c["idx"]]} for c in fallback]
 
+    # Rows the agent didn't address may still just carry a malformed type
+    # (e.g. "headquartered_in (Company -> Place)" echoed from the prompt).
+    # Clean it, and offer the cleaned type if it is a real LinkDef.
+    link_types = dict(ext["link_assignments"])
+    _, link_defs, _ = await _fetch_ontology_vocab(session)
+    known_types = {l["type"] for l in link_defs}
+    for idx, item in enumerate(rejected_links):
+        if idx in link_types:
+            continue
+        raw_type = item.get("row", {}).get("link_type")
+        cleaned = normalize_link_type(raw_type)
+        if cleaned and cleaned != raw_type and cleaned in known_types:
+            link_types[idx] = cleaned
+
     return {
         "classifications": sorted(classifications, key=lambda c: c["idx"]),
-        "link_types": [
-            {"idx": idx, "link_type": lt} for idx, lt in sorted(ext["link_assignments"].items())
-        ],
+        "link_types": [{"idx": idx, "link_type": lt} for idx, lt in sorted(link_types.items())],
         "added_classes": ext["added_classes"],
         "added_links": ext["added_links"],
     }
