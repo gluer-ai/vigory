@@ -40,8 +40,15 @@ the inverse relationship (e.g. "operated by" for operator_of), still use the for
 link_type and instead put the text's object as source_entity and its subject as \
 target_entity. Link types have no past-tense variant — if the text describes a \
 relationship that has ended, use the closest forward link_type and rely on review to add \
-historical dates; do not invent a "previously_x" type. If nothing in the list fits, omit \
-that entity/link rather than guessing.
+historical dates; do not invent a "previously_x" type.
+
+If NOTHING in a list is a genuinely good fit, do NOT force a poor match (a pharmaceutical \
+company is not a DEFENCE_INDUSTRIAL_FIRM, a CEO is not a DIPLOMAT, a drug-development \
+programme is not a SHIPMENT). Instead propose a new term and the system will validate it and \
+add it to the ontology: for entity_subclass use the closest existing key as a parent plus a \
+new UPPER_SNAKE_CASE segment (e.g. "ORGANIZATION.COMMERCIAL_ENTITY.PHARMACEUTICAL_COMPANY"); \
+for link_type use a new lower_snake_case forward verb phrase (e.g. "developed"). Prefer an \
+existing key whenever one reasonably fits.
 
 This scenario may extend earlier ones already in the graph. If an entity in the text \
 refers to the same real-world thing as one in EXISTING_ENTITIES below (same name, or an \
