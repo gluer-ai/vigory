@@ -25,6 +25,7 @@ import {
   PanelRightClose,
   PanelRightOpen,
   Plus,
+  Upload,
   Search,
   ShieldCheck,
   Trash2,
@@ -73,6 +74,7 @@ import { EntitySearch } from '../layout/EntitySearch'
 import { Button } from '../ui/Button'
 import { Select } from '../ui/Select'
 import { AssistantPanel } from './AssistantPanel'
+import { SaveToGraphDialog } from './SaveToGraphDialog'
 import { ScenarioDialog } from './ScenarioDialog'
 import { SandboxNode, type SandboxNodeViewData } from './SandboxNode'
 import { useSandbox, type SaveState } from './useSandbox'
@@ -446,6 +448,7 @@ function Editor({
   const [exploding, setExploding] = useState(false)
   const [expanding, setExpanding] = useState<string | null>(null)
   const [fitPending, setFitPending] = useState(false)
+  const [saveOpen, setSaveOpen] = useState(false)
   const [toolsCollapsed, setToolsCollapsed] = usePersistedFlag('sandbox.tools.collapsed', false)
   const rail = useContext(RailContext)
   const wide = isWide([rail.collapsed, listCollapsed, toolsCollapsed])
@@ -806,6 +809,19 @@ function Editor({
             {SAVE_LABEL[saveState]}
           </span>
           <span className="flex-1" />
+          <Button
+            onClick={() => setSaveOpen(true)}
+            disabled={saveState !== 'saved' || counts.newEntities + counts.newLinks === 0}
+            title={
+              counts.newEntities + counts.newLinks === 0
+                ? 'Nothing new to save: add entities or links first'
+                : saveState !== 'saved'
+                  ? 'Waiting for your changes to be saved'
+                  : 'Review and save the new entities and links to the real knowledge graph'
+            }
+          >
+            <Upload size={14} aria-hidden="true" /> Save to graph
+          </Button>
           <Button onClick={toggleWide} aria-pressed={wide} title={wide ? 'Show the side panels again' : 'Hide the side panels to widen the canvas'}>
             {wide ? <Minimize size={14} aria-hidden="true" /> : <Maximize size={14} aria-hidden="true" />}
             {wide ? 'Show panels' : 'Wide canvas'}
@@ -934,6 +950,7 @@ function Editor({
         />
       </section>
 
+      <SaveToGraphDialog open={saveOpen} onOpenChange={setSaveOpen} sandboxId={sandboxId} sandboxName={name} />
       {toolsCollapsed ? (
         <aside
           aria-label="Sandbox tools (hidden)"

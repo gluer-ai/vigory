@@ -275,3 +275,14 @@ export interface ScenarioExtract {
   /** Real graph entities the text referred to; copied in so links can reach them. */
   existing_entities: Pick<Entity, 'entity_id' | 'label' | 'entity_subclass'>[]
 }
+
+/** A sandbox turned into a proposed ingest batch for review (nothing is saved yet). */
+export interface SandboxProposal {
+  batch: IngestBatch
+  /** New sandbox entities treated as an existing real entity (so not duplicated). */
+  merged: { label: string; into_id: string; into_label: string }[]
+  skipped: { reason: string; count: number }[]
+  notes: string[]
+  /** Real entities the new links attach to (so the picture has no dangling lines). */
+  existing_entities: { entity_id: string; label: string; entity_subclass: string }[]
+}

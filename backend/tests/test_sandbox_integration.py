@@ -38,7 +38,7 @@ LINKS = [("LK-1", "commands", "P-1", "O-1"), ("LK-2", "headquartered_in", "O-1",
 async def driver():
     d = AsyncGraphDatabase.driver(URI, auth=("neo4j", os.environ.get("SANDBOX_TEST_NEO4J_PASSWORD", "testpass123")))
     async with d.session() as s:
-        await s.run("MATCH (x) WHERE x:Entity OR x:Sandbox DETACH DELETE x")
+        await s.run("MATCH (x) WHERE x:Entity OR x:Sandbox OR x:IngestBatch DETACH DELETE x")
         for eid, sub, label in ENTITIES:
             await s.run(
                 "CREATE (:Entity {entity_id:$id, entity_class:$cls, entity_subclass:$sub, label:$label,"
@@ -51,7 +51,7 @@ async def driver():
                 id=lid, lt=lt, a=a, b=b)
     yield d
     async with d.session() as s:
-        await s.run("MATCH (x) WHERE x:Entity OR x:Sandbox DETACH DELETE x")
+        await s.run("MATCH (x) WHERE x:Entity OR x:Sandbox OR x:IngestBatch DETACH DELETE x")
     await d.close()
 
 
@@ -340,3 +340,184 @@ async def test_extract_validates_input(api):
     for body in ({"text": ""}, {"text": "x" * 20_001}, {}):
         assert (await api.post("/sandbox/extract", json=body, headers=api.alice)).status_code == 422
     assert (await api.post("/sandbox/extract", json={"text": "   "}, headers=api.alice)).status_code == 422
+
+
+# ---- sandbox -> proposed batch -> (human) commit ----------------------------------------
+
+from app.api import ingest as ingest_api  # noqa: E402
+
+
+async def _seed_lehman(driver):
+    """Mirror the live situation: real 'Lehman Brothers' (id P-temp2) with a bankruptcy event."""
+    async with driver.session() as s:
+        for eid, sub, label in [
+            ("P-temp2", "ORGANIZATION.COMMERCIAL_ENTITY.FINANCIAL_INSTITUTION", "Lehman Brothers"),
+            ("P-temp1", "EVENT.TRANSACTION.BANKRUPTCY_FILING", "Bankruptcy of Lehman Brothers"),
+        ]:
+            await s.run(
+                "CREATE (:Entity {entity_id:$id, entity_class:$cls, entity_subclass:$sub, label:$label,"
+                " aliases:[], status:'active', confidence:'B2', source_ref:'User scenario', attrs:'{}'})",
+                id=eid, cls=sub.split(".")[0], sub=sub, label=label)
+        await s.run(
+            "MATCH (a:Entity {entity_id:'P-temp2'}), (b:Entity {entity_id:'P-temp1'})"
+            " CREATE (a)-[:LINK {link_id:'L-temp1', link_type:'filed_for', source_entity:'P-temp2', target_entity:'P-temp1'}]->(b)")
+
+
+async def _record(driver, eid):
+    async with driver.session() as s:
+        rec = await (await s.run("MATCH (e:Entity {entity_id:$id}) RETURN e", id=eid)).single()
+    return dict(rec["e"]) if rec else None
+
+
+def _n(id, label, sub, origin="new", x=0.0, base=None, parent=None):
+    return {"id": id, "origin": origin, "label": label, "entity_subclass": sub, "x": x, "y": 0.0, "base": base, "parent": parent}
+
+
+async def test_propose_then_commit_adds_relations_without_touching_real_records(api, driver, monkeypatch):
+    monkeypatch.setattr(ingest_api, "get_driver", lambda: driver)
+    await _seed_lehman(driver)
+    p2_before = await _record(driver, "P-temp2")
+    FI = "ORGANIZATION.COMMERCIAL_ENTITY.FINANCIAL_INSTITUTION"
+    PER = "PERSON.MILITARY_PERSONNEL"
+    LOC = "LOCATION.ADMINISTRATIVE_AREA.MUNICIPALITY_SETTLEMENT"
+    sb = (await api.post("/sandbox", json={"name": "Lehman what-if"}, headers=api.alice)).json()
+    nodes = [
+        _n("N-leh", "Lehman Brothers Holdings Inc.", FI),                                # ingested, sandbox-only
+        _n("P-temp2", "Lehman Brothers", FI, origin="graph", base={"label": "Lehman Brothers", "entity_subclass": FI}),
+        _n("N-fuld", "Richard Fuld", PER, x=1.0),
+        _n("N-nyc", "New York City", LOC, x=2.0),
+        _n("P-temp1", "Bankruptcy of Lehman Brothers", "EVENT.TRANSACTION.BANKRUPTCY_FILING", origin="graph",
+           base={"label": "Bankruptcy of Lehman Brothers", "entity_subclass": "EVENT.TRANSACTION.BANKRUPTCY_FILING"}),
+        _n("P-temp9", "Impostor", PER, x=3.0),   # a NEW entity whose sandbox id mimics a real-looking id
+    ]
+    edges = [
+        {"id": "E-same", "origin": "new", "source": "N-leh", "target": "P-temp2", "link_type": "same_as", "base_type": None, "parent": None},
+        {"id": "E-1", "origin": "new", "source": "N-fuld", "target": "N-leh", "link_type": "commands", "base_type": None, "parent": None},
+        {"id": "E-2", "origin": "new", "source": "N-leh", "target": "N-nyc", "link_type": "headquartered_in", "base_type": None, "parent": None},
+        {"id": "L-temp1", "origin": "graph", "source": "P-temp2", "target": "P-temp1", "link_type": "filed_for", "base_type": "filed_for", "parent": None},
+    ]
+    r = await api.put(f"/sandbox/{sb['sandbox_id']}", json={"nodes": nodes, "edges": edges, "version": 1}, headers=api.alice)
+    assert r.status_code == 200, r.text
+
+    counts_before = await real_graph(driver)
+    r = await api.post(f"/sandbox/{sb['sandbox_id']}/propose", headers=api.alice)
+    assert r.status_code == 200, r.text
+    out = r.json()
+    batch = out["batch"]
+
+    # proposing writes only the batch; the real graph is untouched
+    assert await real_graph(driver) == counts_before
+    assert batch["status"] == "proposed"
+    assert sorted(e["label"] for e in batch["entities"]) == ["Impostor", "New York City", "Richard Fuld"]  # no duplicate Lehman
+    assert out["merged"] == [{"label": "Lehman Brothers Holdings Inc.", "into_id": "P-temp2", "into_label": "Lehman Brothers"}]
+    # the real record the new links attach to comes with its name, so the picture can draw it
+    assert out["existing_entities"] == [{
+        "entity_id": "P-temp2", "label": "Lehman Brothers",
+        "entity_subclass": "ORGANIZATION.COMMERCIAL_ENTITY.FINANCIAL_INSTITUTION"}]
+    assert not {e["entity_id"] for e in batch["entities"]} & {"P-temp1", "P-temp2", "P-temp9", "N-fuld", "N-nyc", "N-leh"}
+    ends = {(l["link_type"], l["source_entity"] == "P-temp2" or l["target_entity"] == "P-temp2") for l in batch["links"]}
+    assert ends == {("commands", True), ("headquartered_in", True)}  # re-pointed at the REAL Lehman
+    assert batch["rejected_entities"] == [] and batch["rejected_links"] == []
+
+    # a human commits it through the normal endpoint
+    c = await api.post(f"/ingest/{batch['batch_id']}/commit", headers=api.alice)
+    assert c.status_code == 200, c.text
+    assert await _record(driver, "P-temp2") == p2_before  # the real Lehman record is byte-for-byte unchanged
+    async with driver.session() as s:
+        rows = [dict(r) async for r in await s.run(
+            "MATCH (a:Entity)-[r:LINK]->(b:Entity) WHERE a.entity_id = 'P-temp2' OR b.entity_id = 'P-temp2'"
+            " RETURN a.label AS a, r.link_type AS t, b.label AS b ORDER BY t")]
+    assert rows == [
+        {"a": "Richard Fuld", "t": "commands", "b": "Lehman Brothers"},
+        {"a": "Lehman Brothers", "t": "filed_for", "b": "Bankruptcy of Lehman Brothers"},
+        {"a": "Lehman Brothers", "t": "headquartered_in", "b": "New York City"},
+    ]
+    # the sandbox itself is unchanged by all this
+    assert (await api.get(f"/sandbox/{sb['sandbox_id']}", headers=api.alice)).json()["version"] == 2
+
+
+async def test_propose_is_owner_only_and_rejects_invalid_content(api, driver):
+    await _seed_lehman(driver)
+    sb = (await api.post("/sandbox", json={"name": "Mine"}, headers=api.alice)).json()
+    assert (await api.post(f"/sandbox/{sb['sandbox_id']}/propose", headers=api.bob)).status_code == 404
+    assert (await api.post(f"/sandbox/{sb['sandbox_id']}/propose")).status_code == 401
+    assert (await api.post("/sandbox/SB-nope/propose", headers=api.alice)).status_code == 404
+
+    PER = "PERSON.MILITARY_PERSONNEL"
+    nodes = [_n("N-a", "Anna", PER), _n("P-temp2", "Lehman Brothers", "ORGANIZATION.COMMERCIAL_ENTITY.FINANCIAL_INSTITUTION", origin="graph",
+              base={"label": "Lehman Brothers", "entity_subclass": "ORGANIZATION.COMMERCIAL_ENTITY.FINANCIAL_INSTITUTION"}),
+             _n("R-gone", "Deleted since", PER, origin="graph", base={"label": "Deleted since", "entity_subclass": PER})]
+    edges = [
+        {"id": "E-1", "origin": "new", "source": "N-a", "target": "P-temp2", "link_type": "commands", "base_type": None, "parent": None},   # person commands an org: fine
+        {"id": "E-2", "origin": "new", "source": "N-a", "target": "R-gone", "link_type": "same_as", "base_type": None, "parent": None},    # real entity no longer exists
+    ]
+    assert (await api.put(f"/sandbox/{sb['sandbox_id']}", json={"nodes": nodes, "edges": edges, "version": 1}, headers=api.alice)).status_code == 200
+    # The save endpoint refuses an ontology violation, so plant one directly in storage (as if the
+    # ontology had changed since the sandbox was saved) to prove propose re-checks on its own.
+    async with driver.session() as s:
+        rec = await (await s.run("MATCH (x:Sandbox {sandbox_id:$id}) RETURN x.state AS st", id=sb["sandbox_id"])).single()
+        state = json.loads(rec["st"])
+        state["edges"].append({"id": "E-3", "origin": "new", "source": "P-temp2", "target": "N-a", "link_type": "commands", "base_type": None, "parent": None})
+        await s.run("MATCH (x:Sandbox {sandbox_id:$id}) SET x.state = $st", id=sb["sandbox_id"], st=json.dumps(state))
+    out = (await api.post(f"/sandbox/{sb['sandbox_id']}/propose", headers=api.alice)).json()
+    assert [l["link_type"] for l in out["batch"]["links"]] == ["commands"] and len(out["batch"]["links"]) == 1
+    assert [x["label"] for x in out["batch"]["entities"]] == ["Anna"]  # kept, not merged into the vanished one
+    assert out["merged"] == []
+    assert {"reason": "links to entities that are no longer in the knowledge graph", "count": 1} in out["skipped"]
+    assert len(out["batch"]["rejected_links"]) == 1  # the planted ontology violation (an organization cannot command a person)
+
+
+async def test_links_the_graph_already_has_are_not_proposed_again(api, driver):
+    await _seed_lehman(driver)
+    FI = "ORGANIZATION.COMMERCIAL_ENTITY.FINANCIAL_INSTITUTION"
+    sb = (await api.post("/sandbox", json={"name": "Dup"}, headers=api.alice)).json()
+    base_leh = {"label": "Lehman Brothers", "entity_subclass": FI}
+    base_b = {"label": "Bankruptcy of Lehman Brothers", "entity_subclass": "EVENT.TRANSACTION.BANKRUPTCY_FILING"}
+    nodes = [_n("P-temp2", "Lehman Brothers", FI, origin="graph", base=base_leh),
+             _n("P-temp1", "Bankruptcy of Lehman Brothers", "EVENT.TRANSACTION.BANKRUPTCY_FILING", origin="graph", base=base_b)]
+    edges = [{"id": "E-1", "origin": "new", "source": "P-temp2", "target": "P-temp1", "link_type": "filed_for", "base_type": None, "parent": None}]
+    await api.put(f"/sandbox/{sb['sandbox_id']}", json={"nodes": nodes, "edges": edges, "version": 1}, headers=api.alice)
+    out = (await api.post(f"/sandbox/{sb['sandbox_id']}/propose", headers=api.alice)).json()
+    assert out["batch"]["links"] == []
+    assert {"reason": "links the graph already has", "count": 1} in out["skipped"]
+
+
+async def test_saving_twice_never_duplicates_and_new_additions_still_go_through(api, driver, monkeypatch):
+    monkeypatch.setattr(ingest_api, "get_driver", lambda: driver)
+    PER, ORG = "PERSON.MILITARY_PERSONNEL", "ORGANIZATION.COMMERCIAL_ENTITY"
+    sb = (await api.post("/sandbox", json={"name": "Twice"}, headers=api.alice)).json()
+    sid = sb["sandbox_id"]
+    nodes = [_n("N-a", "Anna Berg", PER), _n("N-b", "Nordic Holdings", ORG, x=1.0)]
+    edges = [{"id": "E-1", "origin": "new", "source": "N-a", "target": "N-b", "link_type": "affiliated_with", "base_type": None, "parent": None}]
+    assert (await api.put(f"/sandbox/{sid}", json={"nodes": nodes, "edges": edges, "version": 1}, headers=api.alice)).status_code == 200
+
+    async def totals():
+        async with driver.session() as s:
+            e = (await (await s.run("MATCH (e:Entity) RETURN count(e) AS n")).single())["n"]
+            l = (await (await s.run("MATCH ()-[r:LINK]->() RETURN count(r) AS n")).single())["n"]
+        return e, l
+
+    base_totals = await totals()
+    first = (await api.post(f"/sandbox/{sid}/propose", headers=api.alice)).json()["batch"]
+    assert len(first["entities"]) == 2 and len(first["links"]) == 1
+    # a proposal that was never committed does not count as saved: proposing again offers the same
+    again = (await api.post(f"/sandbox/{sid}/propose", headers=api.alice)).json()["batch"]
+    assert len(again["entities"]) == 2
+    assert (await api.post(f"/ingest/{first['batch_id']}/commit", headers=api.alice)).status_code == 200
+    e0, l0 = base_totals
+    assert await totals() == (e0 + 2, l0 + 1)
+    out = (await api.post(f"/sandbox/{sid}/propose", headers=api.alice)).json()
+    assert out["batch"]["entities"] == [] and out["batch"]["links"] == []  # nothing left to save
+    assert {"reason": "entities already saved to the graph from this sandbox", "count": 2} in out["skipped"]
+    assert {"reason": "links the graph already has", "count": 1} in out["skipped"]
+
+    # add one more entity + a link to a saved one: only that is proposed, attached to the saved record
+    nodes.append(_n("N-c", "Oslo Port", "LOCATION.ADMINISTRATIVE_AREA.MUNICIPALITY_SETTLEMENT", x=2.0))
+    edges.append({"id": "E-2", "origin": "new", "source": "N-b", "target": "N-c", "link_type": "headquartered_in", "base_type": None, "parent": None})
+    assert (await api.put(f"/sandbox/{sid}", json={"nodes": nodes, "edges": edges, "version": 2}, headers=api.alice)).status_code == 200
+    nxt = (await api.post(f"/sandbox/{sid}/propose", headers=api.alice)).json()["batch"]
+    assert [e["label"] for e in nxt["entities"]] == ["Oslo Port"] and len(nxt["links"]) == 1
+    saved_b = next(e["entity_id"] for e in first["entities"] if e["label"] == "Nordic Holdings")
+    assert nxt["links"][0]["source_entity"] == saved_b  # attached to the record saved earlier
+    assert (await api.post(f"/ingest/{nxt['batch_id']}/commit", headers=api.alice)).status_code == 200
+    assert await totals() == (e0 + 3, l0 + 2)

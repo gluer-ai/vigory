@@ -11,6 +11,7 @@ from app.models.sandbox import SandboxCreate, SandboxEdge, SandboxNode, SandboxO
 from app.services import sandbox as svc
 from app.services import sandbox_agent as agent
 from app.services.extraction_agent import extract_preview
+from app.services.sandbox_export import build_batch
 
 router = APIRouter(prefix="/sandbox", tags=["sandbox"])
 
@@ -151,3 +152,19 @@ async def extract_scenario(body: ExtractBody, user: str = Depends(require_auth))
                             {k: found[k] for k in ("entity_id", "label", "entity_subclass")}
                         )
     return {**result, "existing_entities": existing}
+
+
+# ---- propose a sandbox for the real graph ---------------------------------------------
+
+
+@router.post("/{sandbox_id}/propose")
+async def propose_to_graph(sandbox_id: str, user: str = Depends(require_auth)):
+    """Create a *proposed* ingest batch from this sandbox's new entities and links.
+
+    The saved sandbox (not whatever the browser holds) is what gets exported, and
+    only its owner can do it. Nothing reaches the real graph: a person reviews the
+    batch and commits it through the normal /ingest/{batch_id}/commit step.
+    """
+    async with get_driver().session() as session:
+        sandbox = await svc.get_for_owner(session, user, sandbox_id)
+        return await build_batch(session, sandbox)

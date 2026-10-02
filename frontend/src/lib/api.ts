@@ -21,6 +21,7 @@ import type {
   Sandbox,
   SandboxEdgeData,
   SandboxNodeData,
+  SandboxProposal,
   SandboxSummary,
   ScenarioExtract,
   VoiceSessionResponse,
@@ -105,6 +106,8 @@ export const authApi = {
 }
 
 export const api = {
+  proposeSandbox: (id: string) =>
+    request<SandboxProposal>(`/sandbox/${encodeURIComponent(id)}/propose`, { method: 'POST' }),
   extractScenario: (text: string) =>
     request<ScenarioExtract>('/sandbox/extract', {
       method: 'POST',
