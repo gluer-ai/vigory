@@ -11,7 +11,7 @@ from fastapi.responses import FileResponse
 from app.config import get_settings
 from app.db.neo4j_client import get_driver
 from app.models.document import Document
-from app.services.document_ingest import process_document, save_upload
+from app.services.document_ingest import DuplicateUploadError, process_document, save_upload
 
 router = APIRouter(prefix="/documents", tags=["documents"])
 
@@ -47,6 +47,8 @@ async def upload_document(file: UploadFile, background_tasks: BackgroundTasks):
             doc = await save_upload(session, file.filename or "upload", content)
         except ValueError as e:
             raise HTTPException(status_code=400, detail=str(e))
+        except DuplicateUploadError as e:
+            raise HTTPException(status_code=409, detail=str(e))
     background_tasks.add_task(process_document, doc["document_id"])
     return doc
 

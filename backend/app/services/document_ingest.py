@@ -2,6 +2,7 @@
 chunked extraction against it in the background, merging all chunks into
 one review batch — the file-upload counterpart to extract_from_text.
 """
+import hashlib
 import json
 import uuid
 from datetime import datetime, timezone
@@ -16,6 +17,15 @@ from app.services.document_parser import extract_text
 from app.services.extraction_agent import _extract_and_validate
 
 ALLOWED_EXTENSIONS = {"txt", "md", "pdf", "docx", "xlsx"}
+
+
+class DuplicateUploadError(Exception):
+    """The same file bytes were already uploaded. Carries the existing
+    document_id so the caller can point the user at it."""
+
+    def __init__(self, existing_document_id: str):
+        super().__init__(f"this file was already uploaded as '{existing_document_id}'")
+        self.existing_document_id = existing_document_id
 
 
 def _extension(filename: str) -> str:
@@ -88,6 +98,17 @@ async def save_upload(session: AsyncSession, filename: str, content: bytes) -> d
     if len(content) > max_bytes:
         raise ValueError(f"file exceeds {settings.max_upload_mb}MB upload limit")
 
+    # Identical bytes must not start a second extraction run, which would
+    # propose the same entities again as a new batch.
+    content_sha256 = hashlib.sha256(content).hexdigest()
+    existing = await session.run(
+        "MATCH (d:Document {content_sha256: $h}) RETURN d.document_id AS document_id LIMIT 1",
+        h=content_sha256,
+    )
+    record = await existing.single()
+    if record is not None:
+        raise DuplicateUploadError(record["document_id"])
+
     document_id = f"D-{uuid.uuid4().hex[:8]}"
     doc_dir = Path(settings.upload_dir) / document_id
     doc_dir.mkdir(parents=True, exist_ok=True)
@@ -98,6 +119,7 @@ async def save_upload(session: AsyncSession, filename: str, content: bytes) -> d
         "filename": safe_filename,
         "file_type": ext,
         "size_bytes": len(content),
+        "content_sha256": content_sha256,
         "file_path": f"{document_id}/{safe_filename}",
         "status": "processing",
         "error_message": None,

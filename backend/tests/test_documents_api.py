@@ -204,3 +204,45 @@ async def test_get_document_404s_when_missing(monkeypatch):
         resp = await client.get("/documents/D-missing")
 
     assert resp.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_upload_409s_when_identical_file_already_uploaded(monkeypatch, tmp_path):
+    """Re-uploading identical bytes must not schedule a second extraction run."""
+    from app.api import documents as documents_module
+    from app.config import Settings
+    from app.services import document_ingest as document_ingest_module
+
+    class _ExistingHashSession(_RecordingSession):
+        async def run(self, query, **params):
+            self.run_calls.append((query, params))
+            if "content_sha256" in query:
+                return _SingleResult({"document_id": "D-existing"})
+            return _SingleResult(None)
+
+    session = _ExistingHashSession()
+    monkeypatch.setattr(documents_module, "get_driver", lambda: _FakeDriver(session))
+    monkeypatch.setattr(
+        document_ingest_module,
+        "get_settings",
+        lambda: Settings(upload_dir=str(tmp_path), max_upload_mb=20, ingest_chunk_chars=8000),
+    )
+    scheduled = []
+
+    async def fake_process_document(document_id):
+        scheduled.append(document_id)
+
+    monkeypatch.setattr(documents_module, "process_document", fake_process_document)
+
+    app = create_app()
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.post(
+            "/documents/upload",
+            files={"file": ("notes.txt", io.BytesIO(b"hello world"), "text/plain")},
+        )
+
+    assert resp.status_code == 409
+    assert "D-existing" in resp.json()["detail"]
+    assert scheduled == []
+    assert list(tmp_path.iterdir()) == []  # nothing written to disk

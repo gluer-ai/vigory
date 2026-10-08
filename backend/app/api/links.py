@@ -46,6 +46,18 @@ async def create_link(link: LinkCreate):
         if await existing.single() is not None:
             raise HTTPException(status_code=409, detail=f"link_id '{link.link_id}' already exists")
 
+        # Same (source, target, type) twice would be a duplicate edge even with
+        # a fresh link_id; the batch and sandbox paths already refuse this.
+        dup = await session.run(
+            "MATCH (:Entity {entity_id: $s})-[r:LINK {link_type: $t}]->(:Entity {entity_id: $o}) RETURN r LIMIT 1",
+            s=link.source_entity, t=link.link_type, o=link.target_entity,
+        )
+        if await dup.single() is not None:
+            raise HTTPException(
+                status_code=409,
+                detail=f"a '{link.link_type}' link from '{link.source_entity}' to '{link.target_entity}' already exists",
+            )
+
         result = await session.run(
             """
             MATCH (s:Entity {entity_id: $source_id}), (t:Entity {entity_id: $target_id})

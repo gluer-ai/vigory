@@ -739,3 +739,48 @@ async def test_add_batch_link_409s_on_id_collision_with_committed_link(monkeypat
         )
 
     assert resp.status_code == 409
+
+
+@pytest.mark.asyncio
+async def test_post_link_409s_on_duplicate_source_target_type(monkeypatch):
+    """POST /links must refuse a second LINK with the same endpoints and type,
+    even under a fresh link_id, instead of creating a parallel edge."""
+    from app.api import links as links_module
+
+    class _DupLinkSession:
+        async def run(self, query, **params):
+            if "RETURN e.entity_subclass AS c" in query:
+                return _SingleResult({"c": "PERSON"})
+            if "MATCH (l:Link {link_id: $id})" in query:
+                return _SingleResult(None)
+            if "[r:LINK {link_type: $t}]" in query:
+                return _SingleResult({"r": {}})
+            raise AssertionError(f"unexpected query: {query}")
+
+    monkeypatch.setattr(links_module, "get_driver", lambda: _FakeDriver(_DupLinkSession()))
+    monkeypatch.setattr(links_module, "validate_link", _noop_validate_link)
+
+    app = create_app()
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.post(
+            "/links",
+            json={
+                "link_id": "L-NEW",
+                "link_type": "member_of",
+                "source_entity": "P-1",
+                "target_entity": "O-1",
+                "direction": "directed",
+                "assertion_status": "reported",
+                "confidence": "B2",
+                "source_ref": "manual",
+                "attrs": {},
+            },
+        )
+
+    assert resp.status_code == 409
+    assert "already exists" in resp.json()["detail"]
+
+
+async def _noop_validate_link(session, link, source_class, target_class):
+    return None

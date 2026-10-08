@@ -397,3 +397,23 @@ async def test_process_document_sets_error_status_on_parse_failure(tmp_path, mon
 
     assert session.document["status"] == "error"
     assert session.document["error_message"]
+
+
+@pytest.mark.asyncio
+async def test_save_upload_refuses_identical_bytes_already_in_graph(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        document_ingest_module,
+        "get_settings",
+        lambda: Settings(upload_dir=str(tmp_path), max_upload_mb=20, ingest_chunk_chars=8000),
+    )
+
+    class _HashHitSession:
+        async def run(self, query, **params):
+            assert "content_sha256" in query
+            return FakeSingleResult(FakeRecord(document_id="D-existing"))
+
+    with pytest.raises(document_ingest_module.DuplicateUploadError) as exc:
+        await document_ingest_module.save_upload(_HashHitSession(), "notes.txt", b"hello world")
+
+    assert exc.value.existing_document_id == "D-existing"
+    assert list(tmp_path.iterdir()) == []  # no second copy written to disk
