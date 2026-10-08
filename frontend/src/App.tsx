@@ -11,6 +11,7 @@ import { Inspector } from './components/layout/Inspector'
 import { LeftRail, type Page } from './components/layout/LeftRail'
 import { SandboxPage } from './components/sandbox/SandboxPage'
 import { KnowledgeBasePage } from './components/knowledge/KnowledgeBasePage'
+import { TaxonomyPage } from './components/taxonomy/TaxonomyPage'
 import { VoicePage } from './components/voice/VoicePage'
 import { Drawer } from './components/ui/Drawer'
 import { api, ApiError } from './lib/api'
@@ -183,6 +184,8 @@ function App() {
               <KnowledgeBasePage />
             ) : page === 'sandbox' ? (
               <SandboxPage ingestOpen={ingestOpen} onIngestOpenChange={setIngestOpen} />
+            ) : page === 'taxonomy' ? (
+              <TaxonomyPage />
             ) : page === 'scope' ? (
               canvasContent
             ) : null}

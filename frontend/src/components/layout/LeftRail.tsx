@@ -7,6 +7,7 @@ import {
   PlusCircle,
   RadioTower,
   Sparkles,
+  TreePine,
   Waypoints,
 } from 'lucide-react'
 import { useEffect, useState } from 'react'
@@ -17,7 +18,7 @@ import { Select } from '../ui/Select'
 import { Stepper } from '../ui/Stepper'
 import { EntitySearch } from './EntitySearch'
 
-export type Page = 'scope' | 'browse' | 'map' | 'feeds' | 'knowledge' | 'voice' | 'sandbox'
+export type Page = 'scope' | 'browse' | 'map' | 'feeds' | 'knowledge' | 'voice' | 'sandbox' | 'taxonomy'
 
 interface LeftRailProps {
   page: Page
@@ -86,6 +87,7 @@ export function LeftRail({
             ['knowledge', FileText, 'Knowledge'],
             ['voice', Mic, 'Voice'],
             ['sandbox', FlaskConical, 'Sandbox'],
+            ['taxonomy', TreePine, 'Taxonomy'],
           ] as const
         ).map(([id, Icon, label]) => (
           <button

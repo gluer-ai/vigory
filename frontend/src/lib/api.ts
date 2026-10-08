@@ -175,6 +175,21 @@ export const api = {
       }),
     }),
   getClasses: () => request<ClassDef[]>('/schema/classes'),
+  getClassCounts: () => request<Record<string, number>>('/schema/classes/counts'),
+  createClass: (c: { key: string; parent_key: string; label: string; notes?: string | null }) =>
+    request<ClassDef>('/schema/classes', { method: 'POST', body: JSON.stringify(c) }),
+  updateClass: (key: string, changes: { label?: string; notes?: string | null }) =>
+    request<ClassDef>(`/schema/classes/${encodeURIComponent(key)}`, {
+      method: 'PATCH',
+      body: JSON.stringify(changes),
+    }),
+  deleteClass: (key: string) =>
+    request<void>(`/schema/classes/${encodeURIComponent(key)}`, { method: 'DELETE' }),
+  mergeClass: (key: string, into: string) =>
+    request<{ merged: string; into: string; entities_moved: number }>(
+      `/schema/classes/${encodeURIComponent(key)}/merge`,
+      { method: 'POST', body: JSON.stringify({ into }) },
+    ),
   getLinkDefs: () => request<LinkDef[]>('/schema/links'),
   getEntity: (id: string) => request<Entity>(`/entities/${encodeURIComponent(id)}`),
   searchEntities: (q: string) =>

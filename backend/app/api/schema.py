@@ -1,7 +1,14 @@
 from fastapi import APIRouter, HTTPException
 
 from app.db.neo4j_client import get_driver
-from app.models.schema import ClassDef, ClassDefCreate, LinkDef, LinkDefCreate
+from app.models.schema import (
+    ClassDef,
+    ClassDefCreate,
+    ClassMerge,
+    ClassUpdate,
+    LinkDef,
+    LinkDefCreate,
+)
 
 router = APIRouter(prefix="/schema", tags=["schema"])
 
@@ -57,6 +64,114 @@ async def create_class(class_def: ClassDefCreate):
         )
         record = await result.single()
         return ClassDef(**dict(record["c"]))
+
+
+@router.get("/classes/counts")
+async def class_entity_counts() -> dict[str, int]:
+    """Entities per exact entity_subclass key (the UI rolls these up the tree)."""
+    driver = get_driver()
+    async with driver.session() as session:
+        result = await session.run(
+            "MATCH (e:Entity) RETURN e.entity_subclass AS key, count(e) AS n"
+        )
+        return {record["key"]: record["n"] async for record in result if record["key"]}
+
+
+async def _require_class(session, key: str) -> dict:
+    result = await session.run("MATCH (c:ClassDef {key: $key}) RETURN c", key=key)
+    record = await result.single()
+    if record is None:
+        raise HTTPException(status_code=404, detail=f"class '{key}' not found")
+    return dict(record["c"])
+
+
+async def _usage(session, key: str) -> tuple[int, int]:
+    """(child classes, entities) that depend on this class."""
+    result = await session.run(
+        """
+        OPTIONAL MATCH (ch:ClassDef {parent_key: $key})
+        WITH count(ch) AS children
+        OPTIONAL MATCH (e:Entity {entity_subclass: $key})
+        RETURN children, count(e) AS entities
+        """,
+        key=key,
+    )
+    record = await result.single()
+    return record["children"], record["entities"]
+
+
+@router.patch("/classes/{key}", response_model=ClassDef)
+async def update_class(key: str, update: ClassUpdate):
+    """Edit label/notes only. The key encodes the path and entities reference
+    it, so renaming/moving is deliberately not offered here."""
+    changes = update.model_dump(exclude_unset=True)
+    if "label" in changes and changes["label"] is None:
+        raise HTTPException(status_code=422, detail="label cannot be null")
+    driver = get_driver()
+    async with driver.session() as session:
+        await _require_class(session, key)
+        if not changes:
+            return ClassDef(**await _require_class(session, key))
+        result = await session.run(
+            "MATCH (c:ClassDef {key: $key}) SET c += $changes RETURN c", key=key, changes=changes
+        )
+        record = await result.single()
+        return ClassDef(**dict(record["c"]))
+
+
+@router.delete("/classes/{key}", status_code=204)
+async def delete_class(key: str):
+    """Delete a class nothing depends on: not a root, no child classes, no entities."""
+    driver = get_driver()
+    async with driver.session() as session:
+        cls = await _require_class(session, key)
+        if cls.get("parent_key") is None:
+            raise HTTPException(status_code=409, detail="root classes cannot be deleted")
+        children, entities = await _usage(session, key)
+        if children or entities:
+            raise HTTPException(
+                status_code=409,
+                detail=f"class '{key}' is in use by {children} child class(es) and "
+                f"{entities} entities; merge or remove them first",
+            )
+        await session.run("MATCH (c:ClassDef {key: $key}) DETACH DELETE c", key=key)
+
+
+@router.post("/classes/{key}/merge")
+async def merge_class(key: str, body: ClassMerge) -> dict[str, int | str]:
+    """Fold a duplicate class into another: its entities move to the target and
+    the duplicate is deleted, in one atomic statement."""
+    if body.into == key:
+        raise HTTPException(status_code=422, detail="cannot merge a class into itself")
+    driver = get_driver()
+    async with driver.session() as session:
+        source = await _require_class(session, key)
+        await _require_class(session, body.into)
+        if source.get("parent_key") is None:
+            raise HTTPException(status_code=409, detail="root classes cannot be merged")
+        if body.into.startswith(key + "."):
+            raise HTTPException(status_code=422, detail="cannot merge a class into its own descendant")
+        children, _ = await _usage(session, key)
+        if children:
+            raise HTTPException(
+                status_code=409,
+                detail=f"class '{key}' has {children} child class(es); merge or delete them first",
+            )
+        result = await session.run(
+            """
+            MATCH (c:ClassDef {key: $key}), (t:ClassDef {key: $into})
+            OPTIONAL MATCH (e:Entity {entity_subclass: $key})
+            WITH c, t, collect(e) AS moved
+            FOREACH (e IN moved | SET e.entity_subclass = t.key, e.entity_class = $root)
+            DETACH DELETE c
+            RETURN size(moved) AS moved
+            """,
+            key=key,
+            into=body.into,
+            root=body.into.split(".")[0],
+        )
+        record = await result.single()
+        return {"merged": key, "into": body.into, "entities_moved": record["moved"]}
 
 
 @router.get("/links", response_model=list[LinkDef])

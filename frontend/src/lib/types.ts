@@ -35,6 +35,7 @@ export interface ClassDef {
   level: number
   label: string
   notes: string | null
+  origin?: string | null
 }
 
 export interface LinkDef {
