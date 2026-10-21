@@ -63,3 +63,28 @@ export function toKeySegment(name: string): string | null {
     .replace(/[\s-]+/g, '_')
   return /^[A-Z][A-Z0-9_]{0,49}$/.test(seg) ? seg : null
 }
+
+/** The key a class gets when re-parented: its last segment under the new parent. */
+export function movedKey(key: string, parentKey: string): string {
+  return `${parentKey}.${key.slice(key.lastIndexOf('.') + 1)}`
+}
+
+/** Why `drag` cannot be re-parented under `targetKey`, or null when it can.
+ * `keys` is every existing class key. */
+export function moveBlocker(drag: ClassDef, targetKey: string, keys: Set<string>): string | null {
+  if (drag.parent_key === null) return 'Root classes cannot be moved.'
+  if (!keys.has(targetKey)) return 'Unknown target class.'
+  if (targetKey === drag.key || targetKey.startsWith(`${drag.key}.`))
+    return 'A class cannot move into itself or its own subclass.'
+  if (targetKey === drag.parent_key) return 'Already under that class.'
+  if (keys.has(movedKey(drag.key, targetKey))) return 'The target already has a class with that name.'
+  return null
+}
+
+/** Why `cls` cannot be deleted, or null when it can. */
+export function deleteBlocker(cls: ClassDef, childCount: number, own: number): string | null {
+  if (cls.parent_key === null) return 'Root classes cannot be deleted.'
+  if (childCount > 0) return `Has ${childCount} child class(es).`
+  if (own > 0) return `${own} entities use this class — merge it into another class instead.`
+  return null
+}

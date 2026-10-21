@@ -1,20 +1,25 @@
-import { ChevronDown, ChevronRight } from 'lucide-react'
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { api, ApiError } from '../../lib/api'
-import { ancestorKeys, buildTree, filterTree, toKeySegment, type TreeNode } from '../../lib/taxonomyTree'
+import {
+  ancestorKeys,
+  buildTree,
+  deleteBlocker,
+  filterTree,
+  moveBlocker,
+  movedKey,
+  toKeySegment,
+} from '../../lib/taxonomyTree'
 import type { ClassDef } from '../../lib/types'
 import { Button } from '../ui/Button'
+import { inputClass, TreeRow, type TreeCtx } from './TaxonomyTree'
 
 function errorText(err: unknown): string {
   return err instanceof ApiError ? err.message : 'Failed to reach the backend'
 }
 
-const inputClass =
-  'w-full rounded-md border border-[var(--color-border)] bg-[var(--color-surface-0)] px-2 py-1.5 text-sm text-[var(--color-text-primary)]'
-
-/** Taxonomy editor: the class ontology as a collapsible tree, with edit,
- * add-child, merge and (guarded) delete. Renaming/moving is not offered — keys
- * are paths that entities reference. */
+/** Taxonomy editor: the class ontology as a collapsible tree, with edit, add,
+ * (guarded) delete and merge, and drag-and-drop re-parenting. Moving a class
+ * rewrites its key (a path that entities reference) server-side. */
 export function TaxonomyPage() {
   const [classes, setClasses] = useState<ClassDef[]>([])
   const [counts, setCounts] = useState<Record<string, number>>({})
@@ -27,6 +32,13 @@ export function TaxonomyPage() {
   // Success notice lives here, not in ClassPanel: add/merge/delete re-select a
   // different class, which remounts the panel and would drop a local message.
   const [notice, setNotice] = useState<string | null>(null)
+  const [actionError, setActionError] = useState<string | null>(null)
+  const [addingKey, setAddingKey] = useState<string | null>(null)
+  const [dragKey, setDragKey] = useState<string | null>(null)
+  const [dropKey, setDropKey] = useState<string | null>(null)
+  const [busy, setBusy] = useState(false)
+  // Edit icon: which class's label field to focus (n makes repeat clicks distinct).
+  const [editRequest, setEditRequest] = useState<{ key: string; n: number } | null>(null)
 
   // Bumped to refetch after an edit or a Retry. Loading happens inside the
   // effect (cancel-flag pattern, as in FeedsPage) so no state is set
@@ -69,6 +81,12 @@ export function TaxonomyPage() {
   const byKey = useMemo(() => new Map(classes.map((c) => [c.key, c])), [classes])
   const selected = selectedKey ? (byKey.get(selectedKey) ?? null) : null
   const aiCount = classes.filter((c) => c.origin === 'extraction').length
+  const keys = useMemo(() => new Set(byKey.keys()), [byKey])
+  const childCounts = useMemo(() => {
+    const m = new Map<string, number>()
+    for (const c of classes) if (c.parent_key) m.set(c.parent_key, (m.get(c.parent_key) ?? 0) + 1)
+    return m
+  }, [classes])
 
   function toggle(key: string) {
     setExpanded((prev) => {
@@ -84,14 +102,111 @@ export function TaxonomyPage() {
     setSelectedKey(key)
   }
 
+  function select(key: string) {
+    setNotice(null)
+    setActionError(null)
+    setEditRequest(null)
+    setSelectedKey(key)
+  }
+
+  /** Run a tree-level action, surfacing a failure in the page banner. */
+  async function act(action: () => Promise<void>) {
+    setBusy(true)
+    setNotice(null)
+    setActionError(null)
+    try {
+      await action()
+    } catch (err) {
+      setActionError(errorText(err))
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  /** Re-parent `key` under `parentKey` after confirming; the key (and every
+   * key beneath it) changes, so the selection is remapped to follow it. */
+  async function moveClass(key: string, parentKey: string) {
+    const cls = byKey.get(key)
+    if (!cls || moveBlocker(cls, parentKey, keys) !== null) return
+    const newKey = movedKey(key, parentKey)
+    const affected = classes.filter((c) => c.key === key || c.key.startsWith(`${key}.`))
+    const entities = affected.reduce((sum, c) => sum + (counts[c.key] ?? 0), 0)
+    const detail =
+      `Its key becomes "${newKey}"` +
+      (affected.length > 1 ? `, along with ${affected.length - 1} subclass(es)` : '') +
+      (entities > 0 ? `, and ${entities} entities are re-pointed` : '') +
+      '.'
+    if (!window.confirm(`Move "${key}" under "${parentKey}"? ${detail}`)) return
+    await act(async () => {
+      await api.moveClass(key, parentKey)
+      setNotice(`Moved to ${newKey}.`)
+      load()
+      const followed =
+        selectedKey === key || selectedKey?.startsWith(`${key}.`)
+          ? newKey + (selectedKey as string).slice(key.length)
+          : (selectedKey ?? newKey)
+      reveal(followed)
+      setExpanded((prev) => new Set([...prev, parentKey, ...ancestorKeys(newKey)]))
+    })
+  }
+
+  const treeCtx: TreeCtx = {
+    expanded,
+    forceOpen: filtering,
+    selectedKey,
+    byKey,
+    keys,
+    childCounts,
+    counts,
+    addingKey,
+    dragKey,
+    dropKey,
+    busy,
+    onToggle: toggle,
+    onSelect: select,
+    onEdit: (key) => {
+      select(key)
+      setEditRequest({ key, n: Date.now() })
+    },
+    onAddOpen: setAddingKey,
+    onAdd: async (parentKey, name, label) => {
+      const segment = toKeySegment(name)
+      if (!segment) return false
+      const newKey = `${parentKey}.${segment}`
+      let ok = false
+      await act(async () => {
+        await api.createClass({ key: newKey, parent_key: parentKey, label })
+        ok = true
+        setAddingKey(null)
+        setNotice('Subclass added.')
+        load()
+        reveal(newKey)
+      })
+      return ok
+    },
+    onDelete: (node) => {
+      const { cls } = node
+      if (!window.confirm(`Delete "${cls.key}"? This cannot be undone.`)) return
+      void act(async () => {
+        await api.deleteClass(cls.key)
+        setNotice('Deleted.')
+        load()
+        if (selectedKey === cls.key) setSelectedKey(cls.parent_key)
+      })
+    },
+    onDragKey: setDragKey,
+    onDropKey: setDropKey,
+    onMove: (key, parentKey) => void moveClass(key, parentKey),
+  }
+
   return (
     <div className="flex h-full flex-col overflow-hidden">
       {/* pl-16 below lg clears AppShell's floating menu button. */}
       <div className="border-b border-[var(--color-border)] py-4 pl-16 pr-6 lg:pl-6">
         <h1 className="text-base font-semibold text-[var(--color-text-primary)]">Taxonomy</h1>
         <p className="mt-0.5 text-sm text-[var(--color-text-muted)]">
-          {classes.length} classes. Edit labels and notes, add subclasses, merge duplicates, or
-          delete unused classes.
+          {classes.length} classes. Add, edit or delete classes from each row, and drag a class onto
+          another to move it.
         </p>
       </div>
 
@@ -101,6 +216,15 @@ export function TaxonomyPage() {
           className="border-b border-[var(--color-border)] px-6 py-2 text-sm text-[var(--color-status-active)]"
         >
           {notice}
+        </p>
+      )}
+
+      {actionError && (
+        <p
+          role="alert"
+          className="border-b border-[var(--color-border)] px-6 py-2 text-sm text-[var(--color-status-destroyed)]"
+        >
+          {actionError}
         </p>
       )}
 
@@ -148,21 +272,7 @@ export function TaxonomyPage() {
               {visible.length === 0 ? (
                 <p className="p-4 text-sm text-[var(--color-text-muted)]">No classes match.</p>
               ) : (
-                visible.map((n) => (
-                  <TreeRow
-                    key={n.cls.key}
-                    node={n}
-                    depth={0}
-                    expanded={expanded}
-                    forceOpen={filtering}
-                    selectedKey={selectedKey}
-                    onToggle={toggle}
-                    onSelect={(key) => {
-                      setNotice(null)
-                      setSelectedKey(key)
-                    }}
-                  />
-                ))
+                visible.map((n) => <TreeRow key={n.cls.key} node={n} depth={0} ctx={treeCtx} />)
               )}
             </div>
           </section>
@@ -177,6 +287,8 @@ export function TaxonomyPage() {
                 cls={selected}
                 classes={classes}
                 counts={counts}
+                focusLabel={editRequest?.key === selected.key ? editRequest.n : 0}
+                onMove={(parentKey) => void moveClass(selected.key, parentKey)}
                 onChanged={(keyToSelect, text) => {
                   setNotice(text)
                   load()
@@ -196,98 +308,20 @@ export function TaxonomyPage() {
   )
 }
 
-function TreeRow({
-  node,
-  depth,
-  expanded,
-  forceOpen,
-  selectedKey,
-  onToggle,
-  onSelect,
-}: {
-  node: TreeNode
-  depth: number
-  expanded: Set<string>
-  forceOpen: boolean
-  selectedKey: string | null
-  onToggle: (key: string) => void
-  onSelect: (key: string) => void
-}) {
-  const { cls } = node
-  const hasChildren = node.children.length > 0
-  const open = hasChildren && (forceOpen || expanded.has(cls.key))
-  const isSelected = selectedKey === cls.key
-  return (
-    <div role="none">
-      <div
-        role="treeitem"
-        aria-level={depth + 1}
-        aria-selected={isSelected}
-        aria-expanded={hasChildren ? open : undefined}
-        className={`flex items-center gap-1 rounded-md pr-2 ${
-          isSelected ? 'bg-[var(--color-surface-hover)]' : 'hover:bg-[var(--color-surface-2)]'
-        }`}
-        style={{ paddingLeft: depth * 16 + 4 }}
-      >
-        {hasChildren ? (
-          <button
-            type="button"
-            aria-label={`${open ? 'Collapse' : 'Expand'} ${cls.label}`}
-            onClick={() => onToggle(cls.key)}
-            className="rounded p-1 text-[var(--color-text-muted)] hover:text-[var(--color-text-primary)]"
-          >
-            {open ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
-          </button>
-        ) : (
-          <span className="inline-block w-[22px]" aria-hidden="true" />
-        )}
-        <button
-          type="button"
-          onClick={() => onSelect(cls.key)}
-          className="flex min-w-0 flex-1 items-center gap-2 py-1 text-left text-sm text-[var(--color-text-primary)]"
-        >
-          <span className="truncate">{cls.label}</span>
-          {cls.origin === 'extraction' && (
-            <span className="shrink-0 rounded border border-dashed border-[var(--color-border-strong)] px-1 text-xs text-[var(--color-text-muted)]">
-              AI-added
-            </span>
-          )}
-          {node.total > 0 && (
-            <span className="ml-auto shrink-0 font-mono text-xs text-[var(--color-text-muted)]">
-              {node.total}
-            </span>
-          )}
-        </button>
-      </div>
-      {open && (
-        <div role="group">
-          {node.children.map((child) => (
-            <TreeRow
-              key={child.cls.key}
-              node={child}
-              depth={depth + 1}
-              expanded={expanded}
-              forceOpen={forceOpen}
-              selectedKey={selectedKey}
-              onToggle={onToggle}
-              onSelect={onSelect}
-            />
-          ))}
-        </div>
-      )}
-    </div>
-  )
-}
-
 function ClassPanel({
   cls,
   classes,
   counts,
+  focusLabel,
+  onMove,
   onChanged,
 }: {
   cls: ClassDef
   classes: ClassDef[]
   counts: Record<string, number>
+  /** Non-zero when the row's edit icon asked for the label field to be focused. */
+  focusLabel: number
+  onMove: (parentKey: string) => void
   /** Called after any change: the key to select next (null = none) and a success notice. */
   onChanged: (keyToSelect: string | null, notice: string) => void
 }) {
@@ -298,6 +332,12 @@ function ClassPanel({
   const [mergeInto, setMergeInto] = useState('')
   const [busy, setBusy] = useState(false)
   const [message, setMessage] = useState<string | null>(null)
+  const [moveTo, setMoveTo] = useState('')
+  const labelRef = useRef<HTMLInputElement>(null)
+
+  useEffect(() => {
+    if (focusLabel) labelRef.current?.focus()
+  }, [focusLabel])
 
   const childCount = classes.filter((c) => c.parent_key === cls.key).length
   const own = counts[cls.key] ?? 0
@@ -312,13 +352,14 @@ function ClassPanel({
     : childCount > 0
       ? 'Merge or delete the child classes first.'
       : null
-  const deleteBlocked = isRoot
-    ? 'Root classes cannot be deleted.'
-    : childCount > 0
-      ? `Has ${childCount} child class(es).`
-      : own > 0
-        ? `${own} entities use this class — merge it into another class instead.`
-        : null
+  const deleteBlocked = deleteBlocker(cls, childCount, own)
+  const keys = new Set(classes.map((c) => c.key))
+  const moveTarget = classes.find((c) => c.key === moveTo.trim())
+  const moveBlocked = isRoot
+    ? 'Root classes cannot be moved.'
+    : moveTarget
+      ? moveBlocker(cls, moveTarget.key, keys)
+      : null
 
   async function run(action: () => Promise<string | null>) {
     setBusy(true)
@@ -396,7 +437,7 @@ function ClassPanel({
         <label htmlFor="tx-label" className="text-sm text-[var(--color-text-muted)]">
           Label
         </label>
-        <input id="tx-label" className={inputClass} value={label} onChange={(e) => setLabel(e.target.value)} />
+        <input id="tx-label" ref={labelRef} className={inputClass} value={label} onChange={(e) => setLabel(e.target.value)} />
         <label htmlFor="tx-notes" className="text-sm text-[var(--color-text-muted)]">
           Notes
         </label>
@@ -436,6 +477,42 @@ function ClassPanel({
         )}
         <Button disabled={busy || !newKey || keyTaken || !childLabel.trim()} onClick={addChild}>
           Add subclass
+        </Button>
+      </section>
+
+      <section className="flex flex-col gap-2 border-t border-[var(--color-border)] pt-4">
+        <h3 className="text-sm font-medium text-[var(--color-text-primary)]">Move under another class</h3>
+        <p className="text-xs text-[var(--color-text-muted)]">
+          Same as dragging in the tree. The class and its subclasses get new keys.
+        </p>
+        <input
+          aria-label="Move target key"
+          list="tx-move-targets"
+          placeholder="Type to find the new parent…"
+          className={inputClass}
+          value={moveTo}
+          disabled={isRoot}
+          onChange={(e) => setMoveTo(e.target.value)}
+        />
+        <datalist id="tx-move-targets">
+          {classes
+            .filter((c) => c.key !== cls.key && !c.key.startsWith(`${cls.key}.`) && c.key !== cls.parent_key)
+            .map((c) => (
+              <option key={c.key} value={c.key}>
+                {c.label}
+              </option>
+            ))}
+        </datalist>
+        {(isRoot || moveBlocked) && (
+          <p className="text-xs text-[var(--color-text-muted)]">
+            {isRoot ? 'Root classes cannot be moved.' : moveBlocked}
+          </p>
+        )}
+        <Button
+          disabled={busy || isRoot || !moveTarget || moveBlocked !== null}
+          onClick={() => moveTarget && onMove(moveTarget.key)}
+        >
+          Move…
         </Button>
       </section>
 

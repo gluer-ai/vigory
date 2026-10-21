@@ -30,6 +30,10 @@ class ClassMerge(BaseModel):
     into: str
 
 
+class ClassMove(BaseModel):
+    parent_key: str
+
+
 class LinkDef(BaseModel):
     type: str
     category: str | None = None

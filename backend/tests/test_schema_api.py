@@ -1,4 +1,4 @@
-"""Taxonomy-editor endpoints on /schema: edit label/notes, safe delete, merge.
+"""Taxonomy-editor endpoints on /schema: edit label/notes, safe delete, merge, move.
 Neo4j is faked with a small in-memory model of ClassDef + Entity nodes."""
 import httpx
 import pytest
@@ -62,6 +62,18 @@ class _Session:
             children = sum(1 for c in self.classes.values() if c.get("parent_key") == p["key"])
             ents = sum(1 for e in self.entities if e["entity_subclass"] == p["key"])
             return _Result({"children": children, "entities": ents})
+        if "SET c.key = nk" in query:
+            old, new, prefix = p["key"], p["new_key"], p["prefix"]
+            for k in [k for k in self.classes if k == old or k.startswith(prefix)]:
+                c = self.classes.pop(k)
+                nk = new + k[len(old):]
+                c["key"], c["level"] = nk, nk.count(".") + 1
+                c["parent_key"] = p["new_parent"] if k == old else new + c["parent_key"][len(old):]
+                self.classes[nk] = c
+                for e in self.entities:
+                    if e["entity_subclass"] == k:
+                        e["entity_subclass"], e["entity_class"] = nk, p["root"]
+            return _Result({"c": self.classes[new]})
         if "DETACH DELETE c" in query and "$into" in query:
             moved = [e for e in self.entities if e["entity_subclass"] == p["key"]]
             for e in moved:
@@ -192,3 +204,50 @@ async def test_merge_rejections_change_nothing(monkeypatch, key, into, status):
         resp = await client.post(f"/schema/classes/{key}/merge", json={"into": into})
     assert resp.status_code == status
     assert set(session.classes) == before
+
+
+@pytest.mark.asyncio
+async def test_move_rekeys_subtree_and_repoints_entities(monkeypatch):
+    ents = [{"entity_subclass": "ORGANIZATION.INTEL.CIA", "entity_class": "ORGANIZATION"}]
+    session, client = await _client(monkeypatch, ents)
+    async with client:
+        resp = await client.post("/schema/classes/ORGANIZATION.INTEL/move", json={"parent_key": "PERSON"})
+    assert resp.status_code == 200
+    assert resp.json()["key"] == "PERSON.INTEL"
+    assert resp.json()["parent_key"] == "PERSON"
+    assert "ORGANIZATION.INTEL" not in session.classes
+    assert session.classes["PERSON.INTEL.CIA"]["parent_key"] == "PERSON.INTEL"
+    assert session.classes["PERSON.INTEL.CIA"]["level"] == 3
+    assert ents[0] == {"entity_subclass": "PERSON.INTEL.CIA", "entity_class": "PERSON"}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "key,parent,status",
+    [
+        ("PERSON", "ORGANIZATION", 409),                              # root
+        ("NOPE", "PERSON", 404),                                      # missing source
+        ("PERSON.OFFICER", "NOPE", 404),                              # missing parent
+        ("ORGANIZATION.INTEL", "ORGANIZATION.INTEL", 422),            # into itself
+        ("ORGANIZATION.INTEL", "ORGANIZATION.INTEL.CIA", 422),        # own descendant
+        ("ORGANIZATION.EMPTY", "ORGANIZATION", 422),                  # same parent
+        ("PERSON.OFFICER", "ORGANIZATION.INTEL", 200),                # fine
+    ],
+)
+async def test_move_validation(monkeypatch, key, parent, status):
+    _, client = await _client(monkeypatch)
+    async with client:
+        resp = await client.post(f"/schema/classes/{key}/move", json={"parent_key": parent})
+    assert resp.status_code == status
+
+
+@pytest.mark.asyncio
+async def test_move_refuses_key_collision(monkeypatch):
+    session, client = await _client(monkeypatch)
+    session.classes["PERSON.EMPTY"] = {
+        "key": "PERSON.EMPTY", "parent_key": "PERSON", "level": 2, "label": "Empty"
+    }
+    async with client:
+        resp = await client.post("/schema/classes/ORGANIZATION.EMPTY/move", json={"parent_key": "PERSON"})
+    assert resp.status_code == 409
+    assert "ORGANIZATION.EMPTY" in session.classes

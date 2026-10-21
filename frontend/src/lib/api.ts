@@ -190,6 +190,11 @@ export const api = {
       `/schema/classes/${encodeURIComponent(key)}/merge`,
       { method: 'POST', body: JSON.stringify({ into }) },
     ),
+  moveClass: (key: string, parentKey: string) =>
+    request<ClassDef>(`/schema/classes/${encodeURIComponent(key)}/move`, {
+      method: 'POST',
+      body: JSON.stringify({ parent_key: parentKey }),
+    }),
   getLinkDefs: () => request<LinkDef[]>('/schema/links'),
   getEntity: (id: string) => request<Entity>(`/entities/${encodeURIComponent(id)}`),
   searchEntities: (q: string) =>

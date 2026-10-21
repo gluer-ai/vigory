@@ -5,6 +5,7 @@ from app.models.schema import (
     ClassDef,
     ClassDefCreate,
     ClassMerge,
+    ClassMove,
     ClassUpdate,
     LinkDef,
     LinkDefCreate,
@@ -103,7 +104,7 @@ async def _usage(session, key: str) -> tuple[int, int]:
 @router.patch("/classes/{key}", response_model=ClassDef)
 async def update_class(key: str, update: ClassUpdate):
     """Edit label/notes only. The key encodes the path and entities reference
-    it, so renaming/moving is deliberately not offered here."""
+    it, so re-parenting lives in the dedicated /move endpoint."""
     changes = update.model_dump(exclude_unset=True)
     if "label" in changes and changes["label"] is None:
         raise HTTPException(status_code=422, detail="label cannot be null")
@@ -172,6 +173,54 @@ async def merge_class(key: str, body: ClassMerge) -> dict[str, int | str]:
         )
         record = await result.single()
         return {"merged": key, "into": body.into, "entities_moved": record["moved"]}
+
+
+@router.post("/classes/{key}/move", response_model=ClassDef)
+async def move_class(key: str, body: ClassMove):
+    """Re-parent a class (and its whole subtree). Keys are paths that entities
+    reference, so every class below `key` gets a new key and its entities are
+    re-pointed - all in one statement, so a failure changes nothing."""
+    driver = get_driver()
+    async with driver.session() as session:
+        source = await _require_class(session, key)
+        await _require_class(session, body.parent_key)
+        if source.get("parent_key") is None:
+            raise HTTPException(status_code=409, detail="root classes cannot be moved")
+        if body.parent_key == key or body.parent_key.startswith(key + "."):
+            raise HTTPException(status_code=422, detail="cannot move a class into itself or its own descendant")
+        if body.parent_key == source.get("parent_key"):
+            raise HTTPException(status_code=422, detail="class is already under that parent")
+        new_key = f"{body.parent_key}.{key.rsplit('.', 1)[-1]}"
+        existing = await session.run("MATCH (c:ClassDef {key: $key}) RETURN c", key=new_key)
+        if await existing.single() is not None:
+            raise HTTPException(status_code=409, detail=f"class '{new_key}' already exists")
+        result = await session.run(
+            """
+            MATCH (c:ClassDef) WHERE c.key = $key OR c.key STARTS WITH $prefix
+            OPTIONAL MATCH (e:Entity) WHERE e.entity_subclass = c.key
+            WITH c, collect(e) AS ents, c.key AS old, c.parent_key AS old_parent
+            WITH c, ents, old,
+                 $new_key + substring(old, size($key)) AS nk,
+                 CASE WHEN old = $key THEN $new_parent
+                      ELSE $new_key + substring(old_parent, size($key)) END AS np
+            SET c.key = nk, c.parent_key = np, c.level = size(split(nk, '.'))
+            FOREACH (e IN ents | SET e.entity_subclass = nk, e.entity_class = $root)
+            WITH c, old WHERE old = $key
+            OPTIONAL MATCH (c)-[r:SUBCLASS_OF]->(:ClassDef)
+            DELETE r
+            WITH DISTINCT c
+            MATCH (p:ClassDef {key: $new_parent})
+            MERGE (c)-[:SUBCLASS_OF]->(p)
+            RETURN c
+            """,
+            key=key,
+            prefix=key + ".",
+            new_key=new_key,
+            new_parent=body.parent_key,
+            root=body.parent_key.split(".")[0],
+        )
+        record = await result.single()
+        return ClassDef(**dict(record["c"]))
 
 
 @router.get("/links", response_model=list[LinkDef])
