@@ -151,7 +151,8 @@ export function VoicePage({ onOpenScenario, onCommitted }: VoicePageProps) {
             >
               {p.committed ? (
                 <p className="text-sm text-[var(--color-status-active)]">
-                  Batch {p.batch.batch_id} committed to the graph.
+                  Committed {p.batch.entities.length} {p.batch.entities.length === 1 ? 'entity' : 'entities'} and{' '}
+                  {p.batch.links.length} {p.batch.links.length === 1 ? 'link' : 'links'} to the graph.
                 </p>
               ) : (
                 <BatchReviewPanel

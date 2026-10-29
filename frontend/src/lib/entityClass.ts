@@ -51,3 +51,14 @@ export function confidenceLevel(code: string): 'high' | 'medium' | 'low' {
   if (letter === 'C' || letter === 'D') return 'medium'
   return 'low'
 }
+
+/** "PERSON.MILITARY_PERSONNEL" -> "Military Personnel": the readable name of a
+ * class, from the last segment of its taxonomy key. */
+export function subclassName(entitySubclass: string | undefined | null): string {
+  const leaf = (entitySubclass ?? '').split('.').pop() ?? ''
+  return leaf
+    .split('_')
+    .filter(Boolean)
+    .map((w) => w.charAt(0).toUpperCase() + w.slice(1).toLowerCase())
+    .join(' ')
+}

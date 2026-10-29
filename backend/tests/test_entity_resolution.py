@@ -50,7 +50,7 @@ class FakeSession:
 async def test_no_candidates_skips_llm_call(monkeypatch):
     called = False
 
-    async def fake_complete_json(system_prompt, user_prompt):
+    async def fake_complete_json(system_prompt, user_prompt, **_):
         nonlocal called
         called = True
         return {"match_entity_id": None, "reason": ""}
@@ -80,7 +80,7 @@ async def test_returns_matched_candidate(monkeypatch):
         ]
     )
 
-    async def fake_complete_json(system_prompt, user_prompt):
+    async def fake_complete_json(system_prompt, user_prompt, **_):
         assert "V-1 | Car" in system_prompt
         return {"match_entity_id": "V-1", "reason": "Automobile is a synonym of Car"}
 
@@ -115,7 +115,7 @@ async def test_batch_entities_of_same_class_are_included_as_candidates(monkeypat
 
     captured = {}
 
-    async def fake_complete_json(system_prompt, user_prompt):
+    async def fake_complete_json(system_prompt, user_prompt, **_):
         captured["system"] = system_prompt
         return {"match_entity_id": None, "reason": ""}
 
@@ -136,7 +136,7 @@ async def test_batch_entities_of_a_different_class_are_excluded(monkeypatch):
     ]
     called = False
 
-    async def fake_complete_json(system_prompt, user_prompt):
+    async def fake_complete_json(system_prompt, user_prompt, **_):
         nonlocal called
         called = True
         return {"match_entity_id": None, "reason": ""}
@@ -165,7 +165,7 @@ async def test_hallucinated_match_id_outside_candidates_is_ignored(monkeypatch):
         ]
     )
 
-    async def fake_complete_json(system_prompt, user_prompt):
+    async def fake_complete_json(system_prompt, user_prompt, **_):
         return {"match_entity_id": "V-999", "reason": "hallucinated"}
 
     monkeypatch.setattr(entity_resolution_module, "complete_json", fake_complete_json)
@@ -193,7 +193,7 @@ async def test_llm_error_propagates(monkeypatch):
         ]
     )
 
-    async def fake_complete_json(system_prompt, user_prompt):
+    async def fake_complete_json(system_prompt, user_prompt, **_):
         raise LLMError("boom")
 
     monkeypatch.setattr(entity_resolution_module, "complete_json", fake_complete_json)
@@ -222,7 +222,7 @@ async def test_candidate_with_none_aliases_is_normalized_to_empty_list(monkeypat
         ]
     )
 
-    async def fake_complete_json(system_prompt, user_prompt):
+    async def fake_complete_json(system_prompt, user_prompt, **_):
         assert "V-1 | Car" in system_prompt
         return {"match_entity_id": "V-1", "reason": "Automobile is a synonym of Car"}
 

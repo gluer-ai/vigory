@@ -5,13 +5,14 @@ existing /ingest endpoints.
 """
 from pathlib import Path
 
-from fastapi import APIRouter, BackgroundTasks, HTTPException, UploadFile
+from fastapi import APIRouter, BackgroundTasks, HTTPException, Query, UploadFile
 from fastapi.responses import FileResponse
 
 from app.config import get_settings
 from app.db.neo4j_client import get_driver
 from app.models.document import Document
 from app.services.document_ingest import DuplicateUploadError, process_document, save_upload
+from app.services.source_cleanup import SourceBusyError, delete_source, ensure_not_busy, plan_removal
 
 router = APIRouter(prefix="/documents", tags=["documents"])
 
@@ -72,6 +73,44 @@ async def get_document(document_id: str):
         if record is None:
             raise HTTPException(status_code=404, detail="document not found")
         return dict(record["d"])
+
+
+async def _get_document_node(session, document_id: str) -> dict:
+    result = await session.run("MATCH (d:Document {document_id: $id}) RETURN d", id=document_id)
+    record = await result.single()
+    if record is None:
+        raise HTTPException(status_code=404, detail="document not found")
+    return dict(record["d"])
+
+
+@router.get("/{document_id}/removal-preview")
+async def removal_preview(document_id: str):
+    """What deleting this document WITH its data would remove, and what it
+    would keep (shared with other sources, or still in use). Changes nothing."""
+    driver = get_driver()
+    async with driver.session() as session:
+        doc = await _get_document_node(session, document_id)
+        try:
+            ensure_not_busy(doc)
+        except SourceBusyError as e:
+            raise HTTPException(status_code=409, detail=str(e))
+        return (await plan_removal(session, doc)).summary()
+
+
+@router.delete("/{document_id}")
+async def delete_document(document_id: str, remove_data: bool = Query(False)):
+    """Delete the source. remove_data=false keeps everything it imported (now
+    standalone); remove_data=true also removes the entities, links and
+    ontology terms it created (see removal-preview for exactly what)."""
+    driver = get_driver()
+    async with driver.session() as session:
+        doc = await _get_document_node(session, document_id)
+        try:
+            return await delete_source(
+                session, doc, remove_data=remove_data, upload_dir=get_settings().upload_dir
+            )
+        except SourceBusyError as e:
+            raise HTTPException(status_code=409, detail=str(e))
 
 
 @router.get("/{document_id}/file")

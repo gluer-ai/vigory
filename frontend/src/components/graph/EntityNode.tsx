@@ -1,5 +1,5 @@
 import { Handle, Position, type NodeProps } from '@xyflow/react'
-import { classMeta } from '../../lib/entityClass'
+import { classMeta, subclassName } from '../../lib/entityClass'
 import { ConfidenceChip } from '../ui/Chip'
 
 export interface EntityNodeData {
@@ -33,7 +33,9 @@ export function EntityNode({ data, selected }: NodeProps & { data: EntityNodeDat
         <span className="truncate text-sm font-medium text-[var(--color-text-primary)]">{data.label}</span>
       </div>
       <div className="flex items-center justify-between">
-        <span className="font-mono text-xs text-[var(--color-text-muted)]">{data.entity_id}</span>
+        <span className="truncate text-xs text-[var(--color-text-muted)]" title={data.entity_id}>
+          {subclassName(data.entity_subclass)}
+        </span>
         <ConfidenceChip code={data.confidence} />
       </div>
       {data.isTrigger && (

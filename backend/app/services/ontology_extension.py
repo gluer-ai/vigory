@@ -18,6 +18,7 @@ import re
 from neo4j import AsyncSession
 
 from app.llm.client import complete_json
+from app.services.provenance import current_source
 
 logger = logging.getLogger(__name__)
 
@@ -162,6 +163,12 @@ async def _load(session: AsyncSession) -> tuple[set[str], dict[str, str], list[d
 
 
 async def _persist(session: AsyncSession, classes: list[dict], links: list[dict]) -> None:
+    # Remember which import caused each addition, so deleting that source can
+    # take the terms it introduced back out (see source_cleanup).
+    source_id = current_source()
+    if source_id:
+        classes = [{**c, "source_id": source_id} for c in classes]
+        links = [{**l, "source_id": source_id} for l in links]
     if classes:
         await session.run(
             "UNWIND $rows AS row MERGE (c:ClassDef {key: row.key}) ON CREATE SET c += row",

@@ -17,4 +17,8 @@ class Document(BaseModel):
     status: DocumentStatus
     error_message: str | None = None
     batch_id: str | None = None
+    # Live progress while status == "processing" (a small model can take minutes).
+    stage: str | None = None
+    progress_current: int | None = None
+    progress_total: int | None = None
     uploaded_at: str

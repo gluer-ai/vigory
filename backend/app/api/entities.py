@@ -132,6 +132,24 @@ async def search_entities(q: str = Query(..., min_length=1), limit: int = Query(
         return [_row_to_entity(row) for row in rows]
 
 
+MAX_LABEL_IDS = 200
+
+
+@router.get("/labels")
+async def entity_labels(ids: list[str] = Query(...)) -> dict[str, str]:
+    """entity_id -> label for the given ids, so the UI can show names instead
+    of ids (e.g. a link's endpoints). Unknown ids are simply absent."""
+    if len(ids) > MAX_LABEL_IDS:
+        raise HTTPException(status_code=422, detail=f"at most {MAX_LABEL_IDS} ids per request")
+    driver = get_driver()
+    async with driver.session() as session:
+        result = await session.run(
+            "MATCH (e:Entity) WHERE e.entity_id IN $ids RETURN e.entity_id AS id, e.label AS label",
+            ids=sorted(set(ids)),
+        )
+        return {r["id"]: r["label"] async for r in result if r["label"]}
+
+
 @router.get("/{entity_id}", response_model=Entity)
 async def get_entity(entity_id: str):
     driver = get_driver()

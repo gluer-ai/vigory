@@ -1,8 +1,10 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { ReactNode } from 'react'
 import { api, ApiError } from '../../lib/api'
 import type { ClassDef, EntityCreateInput, IngestBatch, LinkCreateInput } from '../../lib/types'
 import { AddToBatchDialog } from './AddToBatchDialog'
+import { useEntityLabels } from '../../lib/entityLabels'
+import { DuplicatesPanel } from './DuplicatesPanel'
 import { Button } from '../ui/Button'
 import { ConfidenceChip, ProposedChip } from '../ui/Chip'
 import { Select } from '../ui/Select'
@@ -41,6 +43,12 @@ export function BatchReviewPanel({
   extraActions,
 }: BatchReviewPanelProps) {
   const [addTab, setAddTab] = useState<'entity' | 'link' | null>(null)
+  const [unresolvedDuplicates, setUnresolvedDuplicates] = useState(0)
+  const nameOf = useEntityLabels(
+    batch.links.flatMap((l) => [l.source_entity, l.target_entity]),
+    batch.entities,
+  )
+  const handleUnresolved = useCallback((n: number) => setUnresolvedDuplicates(n), [])
   const [prefillLink, setPrefillLink] = useState<Partial<LinkCreateInput> | null>(null)
 
   const [classes, setClasses] = useState<ClassDef[]>([])
@@ -272,6 +280,12 @@ export function BatchReviewPanel({
         Proposed from this text — review before committing to the graph.
       </p>
 
+      <DuplicatesPanel
+        batch={batch}
+        onBatchUpdated={onBatchUpdated}
+        onUnresolvedChange={handleUnresolved}
+      />
+
       <ResultTable
         title={`Entities (${batch.entities.length})`}
         empty="No entities extracted."
@@ -301,8 +315,12 @@ export function BatchReviewPanel({
         {batch.links.map((l) => (
           <tr key={l.link_id} className="border-b border-[var(--color-border)]">
             <td className="py-1.5 pe-3 font-mono text-xs">{l.link_type}</td>
-            <td className="py-1.5 pe-3 font-mono text-xs">{l.source_entity}</td>
-            <td className="py-1.5 pe-3 font-mono text-xs">{l.target_entity}</td>
+            <td className="py-1.5 pe-3" title={l.source_entity}>
+              {nameOf(l.source_entity)}
+            </td>
+            <td className="py-1.5 pe-3" title={l.target_entity}>
+              {nameOf(l.target_entity)}
+            </td>
             <td className="py-1.5 pe-3">
               <ConfidenceChip code={l.confidence} />
             </td>
@@ -471,12 +489,21 @@ export function BatchReviewPanel({
         </p>
       )}
 
-      <div className="flex justify-end gap-2">
+      <div className="flex items-center justify-end gap-2">
+        {unresolvedDuplicates > 0 && (
+          <span role="status" className="text-xs text-[var(--color-text-muted)]">
+            Decide {unresolvedDuplicates} possible {unresolvedDuplicates === 1 ? 'duplicate' : 'duplicates'} first
+          </span>
+        )}
         {extraActions}
         <Button
           variant="primary"
           onClick={onCommit}
-          disabled={(batch.entities.length === 0 && batch.links.length === 0) || committing}
+          disabled={
+            (batch.entities.length === 0 && batch.links.length === 0) ||
+            committing ||
+            unresolvedDuplicates > 0
+          }
         >
           {committing ? 'Committing…' : 'Commit to graph'}
         </Button>

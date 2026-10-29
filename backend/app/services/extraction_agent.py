@@ -11,11 +11,14 @@ import uuid
 
 from neo4j import AsyncSession
 
+from app.llm.activity import llm_operation
 from app.llm.client import LLMError, complete_json
 from app.models.entity import EntityCreate
 from app.models.link import LinkCreate
 from app.ontology.validate import ValidationError, validate_entity, validate_link
 from app.services.ontology_extension import extend_ontology, normalize_link_type
+from app.services.progress import ProgressFn, no_progress, node_progress
+from app.services.provenance import ingest_source
 
 logger = logging.getLogger(__name__)
 
@@ -187,7 +190,10 @@ def _format_link_types(link_defs: list[dict]) -> str:
 
 
 async def _extract_and_validate(
-    session: AsyncSession, text: str, extra_existing_entities: list[dict] | None = None
+    session: AsyncSession,
+    text: str,
+    extra_existing_entities: list[dict] | None = None,
+    progress: ProgressFn = no_progress,
 ) -> dict:
     """Call the LLM, validate each proposed entity/link, return the valid +
     rejected rows — no IngestBatch is persisted here, so this can be called
@@ -208,7 +214,10 @@ async def _extract_and_validate(
         link_types=_format_link_types(link_defs),
         existing_entities=_format_existing_entities(existing_entities),
     )
-    raw = await complete_json(system_prompt, text)
+    await progress("Extracting entities and links", None, None)
+    with llm_operation("Extracting entities and links"):
+        raw = await complete_json(system_prompt, text)
+    await progress("Validating against the ontology", None, None)
 
     def normalize_links(rows: list[dict], inverse_map: dict[str, str]) -> None:
         # The model sometimes echoes the prompt's "type (Domain -> Range)" line,
@@ -286,12 +295,14 @@ async def _extract_and_validate(
     # errors, the rows simply stay rejected for manual review.
     if rejected_entities or rejected_links:
         try:
-            ext = await extend_ontology(
-                session,
-                rejected_entities,
-                rejected_links,
-                endpoint_info=_endpoint_info(raw, existing_entities),
-            )
+            await progress("Extending the ontology for unmatched items", None, None)
+            with llm_operation("Extending the ontology"):
+                ext = await extend_ontology(
+                    session,
+                    rejected_entities,
+                    rejected_links,
+                    endpoint_info=_endpoint_info(raw, existing_entities),
+                )
         except LLMError as e:
             logger.warning("ontology extension skipped: %s", e)
             ext = None
@@ -405,7 +416,8 @@ async def classify_rejected_entities(session: AsyncSession, rejected_entities: l
         prompt = CLASSIFY_PROMPT_TEMPLATE.format(
             entity_subclasses="\n".join(class_keys), entities="\n".join(lines)
         )
-        raw = await complete_json(prompt, "Classify the entities listed above.")
+        with llm_operation(f"Classifying entities {start + 1}-{start + len(chunk)}"):
+            raw = await complete_json(prompt, "Classify the entities listed above.", light=True)
 
         valid_indices = set(range(start, start + len(chunk)))
         for c in raw.get("classifications", []):
@@ -441,7 +453,8 @@ async def resolve_rejected(
     ext = {"entity_assignments": {}, "link_assignments": {}, "added_classes": [], "added_links": []}
     if rejected_entities or rejected_links:
         try:
-            ext = await extend_ontology(session, rejected_entities, rejected_links, endpoint_info)
+            with llm_operation("Extending the ontology"):
+                ext = await extend_ontology(session, rejected_entities, rejected_links, endpoint_info)
         except LLMError as e:
             logger.warning("ontology extension skipped: %s", e)
 
@@ -497,8 +510,9 @@ async def extract_from_text(session: AsyncSession, text: str) -> dict:
     IngestBatch (unlike document_ingest.process_document, which merges
     several chunks' results into one batch before persisting).
     """
-    result = await _extract_and_validate(session, text)
     batch_id = f"B-{uuid.uuid4().hex[:8]}"
+    with ingest_source(batch_id):
+        result = await _extract_and_validate(session, text)
     batch = {
         "batch_id": batch_id,
         "status": "proposed",
@@ -523,3 +537,73 @@ async def extract_from_text(session: AsyncSession, text: str) -> dict:
         rejected_links=json.dumps(result["rejected_links"]),
     )
     return batch
+
+
+async def create_pending_batch(session: AsyncSession, text: str) -> dict:
+    """Persist an empty IngestBatch with status='processing' so the caller can
+    return immediately and the UI can poll it while process_text_batch runs
+    (a small model can take minutes - far past a request timeout)."""
+    batch_id = f"B-{uuid.uuid4().hex[:8]}"
+    batch = {
+        "batch_id": batch_id,
+        "status": "processing",
+        "stage": "Queued",
+        "progress_current": None,
+        "progress_total": None,
+        "error_message": None,
+        "source_text": text,
+        "entities": [],
+        "links": [],
+        "rejected_entities": [],
+        "rejected_links": [],
+    }
+    await session.run(
+        """
+        CREATE (b:IngestBatch {batch_id: $batch_id, status: 'processing', source_text: $source_text,
+                                entities: '[]', links: '[]',
+                                rejected_entities: '[]', rejected_links: '[]',
+                                stage: 'Queued'})
+        """,
+        batch_id=batch_id,
+        source_text=text,
+    )
+    return batch
+
+
+async def process_text_batch(batch_id: str) -> None:
+    """Background job for a pending batch: extract, then flip it to 'proposed'
+    - or to 'error' with a message, since nobody is awaiting this call."""
+    from app.db.neo4j_client import get_driver
+
+    async with get_driver().session() as session:
+        progress = node_progress(session, "IngestBatch", batch_id)
+        try:
+            result = await session.run(
+                "MATCH (b:IngestBatch {batch_id: $id}) RETURN b.source_text AS text", id=batch_id
+            )
+            record = await result.single()
+            if record is None:
+                return
+            with ingest_source(batch_id):
+                extracted = await _extract_and_validate(session, record["text"], progress=progress)
+            await session.run(
+                """
+                MATCH (b:IngestBatch {batch_id: $id})
+                SET b.status = 'proposed', b.entities = $entities, b.links = $links,
+                    b.rejected_entities = $rejected_entities, b.rejected_links = $rejected_links,
+                    b.stage = null, b.progress_current = null, b.progress_total = null
+                """,
+                id=batch_id,
+                entities=json.dumps(extracted["valid_entities"]),
+                links=json.dumps(extracted["valid_links"]),
+                rejected_entities=json.dumps(extracted["rejected_entities"]),
+                rejected_links=json.dumps(extracted["rejected_links"]),
+            )
+        except Exception as e:
+            logger.exception("text ingest %s failed", batch_id)
+            await session.run(
+                "MATCH (b:IngestBatch {batch_id: $id}) "
+                "SET b.status = 'error', b.error_message = $msg, b.stage = null",
+                id=batch_id,
+                msg=str(e),
+            )

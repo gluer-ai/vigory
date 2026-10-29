@@ -1,10 +1,11 @@
 import * as Dialog from '@radix-ui/react-dialog'
 import { X } from 'lucide-react'
-import { useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { api, ApiError } from '../../lib/api'
 import { SAMPLE_SCENARIOS } from '../../lib/sampleScenarios'
 import type { IngestBatch } from '../../lib/types'
 import { Button } from '../ui/Button'
+import { ProgressLine } from '../ui/ProgressLine'
 import { BatchReviewPanel } from './BatchReviewPanel'
 
 interface IngestDialogProps {
@@ -14,6 +15,9 @@ interface IngestDialogProps {
    * to the newly created entities. */
   onCommitted: (firstEntityId: string) => void
 }
+
+const POLL_MS = 2000
+const MAX_POLL_FAILURES = 5
 
 type Phase = 'draft' | 'extracting' | 'review' | 'committing' | 'committed' | 'error'
 
@@ -26,8 +30,21 @@ export function IngestDialog({ open, onOpenChange, onCommitted }: IngestDialogPr
   const [batch, setBatch] = useState<IngestBatch | null>(null)
   const [errorMessage, setErrorMessage] = useState('')
   const [commitError, setCommitError] = useState('')
+  const [elapsed, setElapsed] = useState(0)
+  // Bumped on reset/close so a poll loop for an abandoned extraction stops.
+  const runId = useRef(0)
+
+  // Tick a visible stopwatch while extracting - a small model can take minutes.
+  useEffect(() => {
+    if (phase !== 'extracting') return
+    const started = Date.now()
+    setElapsed(0)
+    const id = setInterval(() => setElapsed((Date.now() - started) / 1000), 1000)
+    return () => clearInterval(id)
+  }, [phase])
 
   function reset() {
+    runId.current += 1
     setText('')
     setPhase('draft')
     setBatch(null)
@@ -41,12 +58,33 @@ export function IngestDialog({ open, onOpenChange, onCommitted }: IngestDialogPr
   }
 
   async function handleExtract() {
+    const myRun = ++runId.current
     setPhase('extracting')
+    setBatch(null)
     try {
-      const result = await api.ingestText(text)
-      setBatch(result)
+      let current = await api.ingestTextAsync(text)
+      setBatch(current)
+      let failures = 0
+      while (current.status === 'processing') {
+        await new Promise((resolve) => setTimeout(resolve, POLL_MS))
+        if (runId.current !== myRun) return
+        try {
+          current = await api.getBatch(current.batch_id)
+          failures = 0
+          setBatch(current)
+        } catch (err) {
+          // Tolerate a blip; the job keeps running server-side.
+          if (++failures >= MAX_POLL_FAILURES) throw err
+        }
+      }
+      if (runId.current !== myRun) return
+      if (current.status === 'error') {
+        throw new ApiError(500, current.error_message || 'Extraction failed')
+      }
+      setBatch(current)
       setPhase('review')
     } catch (err) {
+      if (runId.current !== myRun) return
       setErrorMessage(err instanceof ApiError ? err.message : 'Failed to reach the backend')
       setPhase('error')
     }
@@ -123,6 +161,14 @@ export function IngestDialog({ open, onOpenChange, onCommitted }: IngestDialogPr
                 placeholder="e.g. Major Ivan Petrov commands the 3rd Motor Rifle Battalion, based near..."
                 className="rounded-md border border-[var(--color-border)] bg-[var(--color-surface-0)] p-3 text-sm text-[var(--color-text-primary)] placeholder:text-[var(--color-text-muted)] focus-visible:border-[var(--color-focus)]"
               />
+              {phase === 'extracting' && (
+                <ProgressLine
+                  stage={batch?.stage ?? 'Starting'}
+                  current={batch?.progress_current}
+                  total={batch?.progress_total}
+                  elapsedSeconds={elapsed}
+                />
+              )}
               {phase === 'error' && (
                 <p role="alert" className="text-sm text-[var(--color-status-destroyed)]">
                   {errorMessage}

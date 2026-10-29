@@ -5,6 +5,7 @@ class, so 'Automobile' and 'Car' resolve to one entity instead of two.
 """
 from neo4j import AsyncSession
 
+from app.llm.activity import llm_operation
 from app.llm.client import complete_json
 
 _CANDIDATE_LIMIT = 200
@@ -75,7 +76,8 @@ async def find_synonym_match(
 
     system_prompt = SYNONYM_PROMPT_TEMPLATE.format(candidates=_format_candidates(candidates))
     user_prompt = f"New entity: {label} (aliases: {', '.join(aliases) or 'none'})"
-    raw = await complete_json(system_prompt, user_prompt)
+    with llm_operation("Checking for a duplicate entity"):
+        raw = await complete_json(system_prompt, user_prompt, light=True)
 
     match_id = raw.get("match_entity_id")
     if not match_id:

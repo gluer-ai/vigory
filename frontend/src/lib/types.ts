@@ -63,7 +63,12 @@ export interface RejectedRow {
 
 export interface IngestBatch {
   batch_id: string
-  status: 'proposed' | 'committed'
+  status: 'processing' | 'proposed' | 'committed' | 'error'
+  /** Live progress while status === 'processing' (null otherwise). */
+  stage?: string | null
+  progress_current?: number | null
+  progress_total?: number | null
+  error_message?: string | null
   source_text: string
   entities: Entity[]
   links: Link[]
@@ -173,7 +178,73 @@ export interface Document {
   status: DocumentStatus
   error_message: string | null
   batch_id: string | null
+  /** Live progress while status === 'processing'. */
+  stage?: string | null
+  progress_current?: number | null
+  progress_total?: number | null
   uploaded_at: string
+}
+
+export type DuplicateReason = 'same_id' | 'same_label' | 'alias' | 'reordered' | 'similar'
+
+export interface DuplicateMatch {
+  entity_id: string
+  label: string
+  aliases: string[]
+  entity_class: string
+  entity_subclass: string
+  /** Already committed to the graph, or earlier in this same batch. */
+  where: 'graph' | 'batch'
+  reason: DuplicateReason
+  score: number
+}
+
+export interface DuplicateItem {
+  entity_id: string
+  label: string
+  aliases: string[]
+  entity_class: string
+  entity_subclass: string
+  matches: DuplicateMatch[]
+}
+
+export type DuplicateDecision =
+  | { entity_id: string; action: 'keep_separate' }
+  | { entity_id: string; action: 'remove'; target_id: string }
+
+export interface RemovalPreview {
+  document_id: string
+  filename: string
+  status: string
+  entities: { remove: number; sample: string[]; kept_shared: number; untagged_import: number }
+  links: { remove: number; untagged_import: number }
+  classes: { remove: string[]; kept: { key: string; reason: string }[] }
+  link_types: { remove: string[]; kept: { type: string; reason: string }[] }
+}
+
+export interface DeleteDocumentResult {
+  document_id: string
+  data_removed: boolean
+  entities?: RemovalPreview['entities']
+  links?: RemovalPreview['links']
+  classes?: RemovalPreview['classes']
+  link_types?: RemovalPreview['link_types']
+}
+
+export type LlmState = 'ready' | 'busy' | 'downloading' | 'unreachable' | 'unconfigured'
+
+export interface LlmStatus {
+  state: LlmState
+  provider: string
+  model: string
+  /** Self-hosted (Ollama) model. */
+  local: boolean
+  reachable: boolean | null
+  model_installed: boolean | null
+  /** Model is resident in memory; false means the next call pays a cold-start load. */
+  model_loaded: boolean | null
+  active: { operation: string; elapsed_seconds: number }[]
+  last_call: { operation: string; duration_seconds: number; ok: boolean } | null
 }
 
 export interface VoiceTool {

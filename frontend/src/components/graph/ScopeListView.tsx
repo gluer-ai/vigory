@@ -1,3 +1,4 @@
+import { useEntityLabels } from '../../lib/entityLabels'
 import type { Entity, Link, RelevanceAnnotation } from '../../lib/types'
 import { ConfidenceChip, StatusChip } from '../ui/Chip'
 
@@ -18,6 +19,10 @@ export function ScopeListView({
   onSelect,
   annotations,
 }: ScopeListViewProps) {
+  const nameOf = useEntityLabels(
+    edges.flatMap((e) => [e.source_entity, e.target_entity]),
+    nodes,
+  )
   return (
     <div className="flex h-full flex-col gap-6 overflow-y-auto p-4">
       <section aria-labelledby="nodes-heading">
@@ -90,7 +95,7 @@ export function ScopeListView({
                     onClick={() => onSelect(e.source_entity)}
                     className="text-[var(--color-text-primary)] underline-offset-2 hover:underline"
                   >
-                    {e.source_entity}
+                    {nameOf(e.source_entity)}
                   </button>
                 </td>
                 <td className="py-1.5 pe-3">
@@ -99,7 +104,7 @@ export function ScopeListView({
                     onClick={() => onSelect(e.target_entity)}
                     className="text-[var(--color-text-primary)] underline-offset-2 hover:underline"
                   >
-                    {e.target_entity}
+                    {nameOf(e.target_entity)}
                   </button>
                 </td>
                 <td className="py-1.5 pe-3">

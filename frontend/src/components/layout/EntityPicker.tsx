@@ -1,5 +1,7 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { api } from '../../lib/api'
+import { subclassName } from '../../lib/entityClass'
+import { useEntityLabels } from '../../lib/entityLabels'
 import type { Entity } from '../../lib/types'
 
 interface EntityPickerProps {
@@ -13,18 +15,32 @@ interface EntityPickerProps {
   'aria-label'?: string
 }
 
-/** Free-text entity_id input with a live suggestions dropdown, combining
- * locally-known entities and the backend's /entities/search (existing
- * committed entities) — the source/target picker for manually-added
- * batch links, which may point at either. */
+/** Entity input with a live suggestions dropdown, combining locally-known
+ * entities and the backend's /entities/search (existing committed entities) —
+ * the source/target picker for manually-added batch links, which may point at
+ * either. The field shows the entity's NAME; the value it reports through
+ * onChange is still its id (typing an exact id also works). */
 export function EntityPicker({ value, onChange, localEntities, placeholder, ...aria }: EntityPickerProps) {
   const [query, setQuery] = useState(value)
   const [remoteResults, setRemoteResults] = useState<Entity[]>([])
   const [open, setOpen] = useState(false)
+  // What the user typed themselves: if `value` just echoes it back, leave the
+  // text alone (otherwise typing an exact id would be rewritten mid-keystroke).
+  const typed = useRef<string | null>(null)
+  // Entities picked from search results: known by name right away, no lookup.
+  const [picked, setPicked] = useState<Entity[]>([])
+  const known = useMemo(() => [...localEntities, ...picked], [localEntities, picked])
+  // Don't look up text the user is still typing - only ids set from outside.
+  const fromOutside = Boolean(value) && typed.current !== value
+  const nameOf = useEntityLabels(fromOutside ? [value] : [], known)
+  const name = fromOutside ? nameOf(value) : value
 
+  // `value` is an id set from outside (a prefilled link, or a pick): show its name.
   useEffect(() => {
-    setQuery(value)
-  }, [value])
+    if (typed.current !== null && typed.current === value) return
+    typed.current = null
+    setQuery(name)
+  }, [value, name])
 
   useEffect(() => {
     if (!query.trim()) {
@@ -56,8 +72,10 @@ export function EntityPicker({ value, onChange, localEntities, placeholder, ...a
   const suggestions = [...localMatches, ...remoteResults.filter((e) => !seen.has(e.entity_id))]
 
   function pick(entity: Entity) {
+    typed.current = null
+    setPicked((prev) => [...prev, entity])
     onChange(entity.entity_id)
-    setQuery(entity.entity_id)
+    setQuery(entity.label)
     setOpen(false)
   }
 
@@ -67,6 +85,7 @@ export function EntityPicker({ value, onChange, localEntities, placeholder, ...a
         type="text"
         value={query}
         onChange={(e) => {
+          typed.current = e.target.value
           setQuery(e.target.value)
           onChange(e.target.value)
           setOpen(true)
@@ -87,7 +106,7 @@ export function EntityPicker({ value, onChange, localEntities, placeholder, ...a
                 className="flex w-full flex-col items-start px-2.5 py-1.5 text-start hover:bg-[var(--color-surface-hover)]"
               >
                 <span className="text-sm text-[var(--color-text-primary)]">{entity.label}</span>
-                <span className="font-mono text-xs text-[var(--color-text-muted)]">{entity.entity_id}</span>
+                <span className="text-xs text-[var(--color-text-muted)]">{subclassName(entity.entity_subclass)}</span>
               </button>
             </li>
           ))}

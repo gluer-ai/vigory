@@ -1256,7 +1256,7 @@ function NodePanel({
       <span className="text-xs text-[var(--color-text-muted)]">Class</span>
       <Select aria-label="Class" value={node.entity_subclass} onValueChange={reclassify} options={options} />
       {blocked && <p role="alert" className="text-xs text-[var(--color-status-destroyed)]">{blocked}</p>}
-      {node.origin === 'graph' && <p className="font-mono text-xs text-[var(--color-text-muted)]">Copy of {node.id}</p>}
+      {node.origin === 'graph' && <p className="text-xs text-[var(--color-text-muted)]">Copied from the graph</p>}
       {onExpand && (
         <div className="flex flex-col gap-1.5 rounded-md border border-[var(--color-border)] p-2">
           <span className="text-xs text-[var(--color-text-muted)]">

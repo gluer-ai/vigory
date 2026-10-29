@@ -162,7 +162,7 @@ async def test_extract_rejects_bogus_terms_and_accepts_real_ones(monkeypatch):
 
     captured_prompt = {}
 
-    async def fake_complete_json(system_prompt, user_prompt):
+    async def fake_complete_json(system_prompt, user_prompt, **_):
         captured_prompt["system"] = system_prompt
         return raw_llm_output
 
@@ -228,7 +228,7 @@ async def test_extract_normalizes_inverse_link_type_and_swaps_endpoints(monkeypa
         ],
     }
 
-    async def fake_complete_json(system_prompt, user_prompt):
+    async def fake_complete_json(system_prompt, user_prompt, **_):
         return raw_llm_output
 
     monkeypatch.setattr(extraction_agent_module, "complete_json", fake_complete_json)
@@ -275,7 +275,7 @@ async def test_extract_reuses_existing_entity_instead_of_duplicating(monkeypatch
         ],
     }
 
-    async def fake_complete_json(system_prompt, user_prompt):
+    async def fake_complete_json(system_prompt, user_prompt, **_):
         return raw_llm_output
 
     monkeypatch.setattr(extraction_agent_module, "complete_json", fake_complete_json)
@@ -315,7 +315,7 @@ async def test_extract_and_validate_folds_extra_existing_entities_into_prompt_an
     }
     captured_prompt = {}
 
-    async def fake_complete_json(system_prompt, user_prompt):
+    async def fake_complete_json(system_prompt, user_prompt, **_):
         captured_prompt["system"] = system_prompt
         return raw_llm_output
 
@@ -353,7 +353,7 @@ async def test_classify_rejected_entities_returns_valid_leaf_keys(monkeypatch):
         },
     ]
 
-    async def fake_complete_json(system_prompt, user_prompt):
+    async def fake_complete_json(system_prompt, user_prompt, **_):
         assert "Ben Bernanke" in system_prompt
         assert "PERSON.MILITARY_PERSONNEL" in system_prompt
         return {
@@ -382,7 +382,7 @@ async def test_classify_rejected_entities_ignores_hallucinated_key_and_index(mon
         },
     ]
 
-    async def fake_complete_json(system_prompt, user_prompt):
+    async def fake_complete_json(system_prompt, user_prompt, **_):
         return {
             "classifications": [
                 {"idx": 0, "entity_subclass": "MADE_UP.NOT_REAL"},  # not a real key
@@ -417,7 +417,7 @@ async def test_classify_rejected_entities_splits_large_batches_into_chunks(monke
     # to 0 per chunk).
     chunk_starts = [0, 2, 4]
 
-    async def fake_complete_json(system_prompt, user_prompt):
+    async def fake_complete_json(system_prompt, user_prompt, **_):
         calls.append(system_prompt)
         start = chunk_starts[len(calls) - 1]
         return {"classifications": [{"idx": start, "entity_subclass": "PERSON.MILITARY_PERSONNEL"}]}
@@ -437,7 +437,7 @@ async def test_classify_rejected_entities_splits_large_batches_into_chunks(monke
 async def test_classify_rejected_entities_skips_llm_call_when_nothing_to_classify(monkeypatch):
     called = False
 
-    async def fake_complete_json(system_prompt, user_prompt):
+    async def fake_complete_json(system_prompt, user_prompt, **_):
         nonlocal called
         called = True
         return {"classifications": []}
@@ -462,7 +462,7 @@ async def test_classify_rejected_entities_propagates_llm_error(monkeypatch):
         },
     ]
 
-    async def fake_complete_json(system_prompt, user_prompt):
+    async def fake_complete_json(system_prompt, user_prompt, **_):
         raise LLMError("boom")
 
     monkeypatch.setattr(extraction_agent_module, "complete_json", fake_complete_json)

@@ -17,6 +17,7 @@ import { Button } from '../ui/Button'
 import { Select } from '../ui/Select'
 import { Stepper } from '../ui/Stepper'
 import { EntitySearch } from './EntitySearch'
+import { LlmStatusBadge } from './LlmStatusBadge'
 
 export type Page = 'scope' | 'browse' | 'map' | 'feeds' | 'knowledge' | 'voice' | 'sandbox' | 'taxonomy'
 
@@ -76,6 +77,8 @@ export function LeftRail({
         <h1 className="text-sm font-semibold text-[var(--color-text-primary)]">Vigory.ai</h1>
         <p className="mt-0.5 text-xs text-[var(--color-text-muted)]">Scenario scoping</p>
       </div>
+
+      <LlmStatusBadge />
 
       <div className="grid grid-cols-2 gap-1 rounded-md border border-[var(--color-border)] p-1" role="tablist">
         {(

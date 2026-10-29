@@ -34,13 +34,24 @@ def create_app() -> FastAPI:
         return {"status": "ok" if neo4j_ok else "degraded", "neo4j": neo4j_ok}
 
     from app.api import auth as auth_api
-    from app.api import documents, entities, feeds, ingest, links, sandbox, scenarios, schema, voice
+    from app.api import (
+        documents,
+        entities,
+        feeds,
+        ingest,
+        links,
+        llm,
+        sandbox,
+        scenarios,
+        schema,
+        voice,
+    )
 
     # /health and /auth/* stay public; everything else requires a token
     # whenever AUTH_PASSWORD is set.
     app.include_router(auth_api.router)
     protected = [Depends(require_auth)]
-    for module in (entities, links, schema, scenarios, ingest, documents, feeds, voice, sandbox):
+    for module in (entities, links, schema, scenarios, ingest, documents, feeds, voice, sandbox, llm):
         app.include_router(module.router, dependencies=protected)
 
     return app

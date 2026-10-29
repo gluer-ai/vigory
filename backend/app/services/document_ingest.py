@@ -14,7 +14,10 @@ from app.config import get_settings
 from app.db.neo4j_client import get_driver
 from app.services.chunking import chunk_text
 from app.services.document_parser import extract_text
+from app.llm.activity import llm_operation
 from app.services.extraction_agent import _extract_and_validate
+from app.services.progress import node_progress
+from app.services.provenance import ingest_source
 
 ALLOWED_EXTENSIONS = {"txt", "md", "pdf", "docx", "xlsx"}
 
@@ -124,6 +127,9 @@ async def save_upload(session: AsyncSession, filename: str, content: bytes) -> d
         "status": "processing",
         "error_message": None,
         "batch_id": None,
+        "stage": "Queued",
+        "progress_current": None,
+        "progress_total": None,
         "uploaded_at": datetime.now(timezone.utc).isoformat(),
     }
     await session.run("CREATE (d:Document $props)", props=doc)
@@ -148,6 +154,8 @@ async def process_document(document_id: str) -> None:
 
         try:
             settings = get_settings()
+            progress = node_progress(session, "Document", document_id)
+            await progress("Reading the file", None, None)
             file_bytes = (Path(settings.upload_dir) / doc["file_path"]).read_bytes()
             text = extract_text(doc["filename"], file_bytes)
             chunks = chunk_text(text, max_chars=settings.ingest_chunk_chars)
@@ -158,10 +166,19 @@ async def process_document(document_id: str) -> None:
             valid_links: list[dict] = []
             rejected_links: list[dict] = []
             used_entity_ids: set[str] = set()
-            for chunk in chunks:
-                chunk_result = await _extract_and_validate(
-                    session, chunk, extra_existing_entities=pending_entities
-                )
+            total = len(chunks)
+            for index, chunk in enumerate(chunks, start=1):
+
+                async def chunk_progress(stage, _current=None, _total=None, index=index):
+                    await progress(stage, index, total)
+
+                with llm_operation(f"{doc['filename']}: part {index}/{total}"), ingest_source(document_id):
+                    chunk_result = await _extract_and_validate(
+                        session,
+                        chunk,
+                        extra_existing_entities=pending_entities,
+                        progress=chunk_progress,
+                    )
                 chunk_entities, chunk_links = _dedupe_chunk_entity_ids(
                     chunk_result["valid_entities"], chunk_result["valid_links"], used_entity_ids
                 )
@@ -173,6 +190,7 @@ async def process_document(document_id: str) -> None:
                 rejected_links.extend(chunk_result["rejected_links"])
                 pending_entities.extend(chunk_entities)
 
+            await progress("Saving the proposal", total, total)
             batch_id = f"B-{uuid.uuid4().hex[:8]}"
             await session.run(
                 """
@@ -191,14 +209,16 @@ async def process_document(document_id: str) -> None:
                 document_id=document_id,
             )
             await session.run(
-                "MATCH (d:Document {document_id: $id}) SET d.status = $status, d.batch_id = $batch_id",
+                "MATCH (d:Document {document_id: $id}) SET d.status = $status, d.batch_id = $batch_id, "
+                "d.stage = null, d.progress_current = null, d.progress_total = null",
                 id=document_id,
                 status="proposed",
                 batch_id=batch_id,
             )
         except Exception as e:
             await session.run(
-                "MATCH (d:Document {document_id: $id}) SET d.status = $status, d.error_message = $error_message",
+                "MATCH (d:Document {document_id: $id}) SET d.status = $status, d.error_message = $error_message, "
+                "d.stage = null",
                 id=document_id,
                 status="error",
                 error_message=str(e),

@@ -1,10 +1,12 @@
-import { Upload } from 'lucide-react'
+import { Trash2, Upload } from 'lucide-react'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { api, ApiError } from '../../lib/api'
 import type { Document } from '../../lib/types'
+import { ProgressLine } from '../ui/ProgressLine'
+import { DeleteSourceDialog } from './DeleteSourceDialog'
 import { DocumentReviewDialog } from './DocumentReviewDialog'
 
-const REFRESH_MS = 3000
+const REFRESH_MS = 2000
 
 const STATUS_COLOR: Record<Document['status'], string> = {
   processing: 'var(--color-status-unknown)',
@@ -40,6 +42,7 @@ export function KnowledgeBasePage() {
   const [uploading, setUploading] = useState(false)
   const [uploadError, setUploadError] = useState('')
   const [reviewDocId, setReviewDocId] = useState<string | null>(null)
+  const [deleteDoc, setDeleteDoc] = useState<Document | null>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
 
   const refresh = useCallback(async () => {
@@ -152,6 +155,16 @@ export function KnowledgeBasePage() {
                   </td>
                   <td className="py-2 pe-3">
                     <DocumentStatusChip status={doc.status} />
+                    {doc.status === 'processing' && (
+                      <div className="mt-1.5 w-56">
+                        <ProgressLine
+                          stage={doc.stage}
+                          current={doc.progress_current}
+                          total={doc.progress_total}
+                          elapsedSeconds={(Date.now() - new Date(doc.uploaded_at).getTime()) / 1000}
+                        />
+                      </div>
+                    )}
                     {doc.status === 'error' && doc.error_message && (
                       <div className="mt-1 text-xs text-[var(--color-status-destroyed)]">
                         {doc.error_message}
@@ -159,15 +172,26 @@ export function KnowledgeBasePage() {
                     )}
                   </td>
                   <td className="py-2 pe-3">
-                    {doc.status === 'proposed' && (
+                    <div className="flex items-center gap-2">
+                      {doc.status === 'proposed' && (
+                        <button
+                          type="button"
+                          onClick={() => setReviewDocId(doc.document_id)}
+                          className="rounded-md border border-[var(--color-border)] px-2.5 py-1 text-xs text-[var(--color-text-primary)] hover:bg-[var(--color-surface-hover)]"
+                        >
+                          Review
+                        </button>
+                      )}
                       <button
                         type="button"
-                        onClick={() => setReviewDocId(doc.document_id)}
-                        className="rounded-md border border-[var(--color-border)] px-2.5 py-1 text-xs text-[var(--color-text-primary)] hover:bg-[var(--color-surface-hover)]"
+                        onClick={() => setDeleteDoc(doc)}
+                        aria-label={`Delete ${doc.filename}`}
+                        title="Delete…"
+                        className="rounded-md border border-[var(--color-border)] p-1.5 text-[var(--color-text-muted)] hover:bg-[var(--color-surface-hover)] hover:text-[var(--color-status-destroyed)]"
                       >
-                        Review
+                        <Trash2 size={14} />
                       </button>
-                    )}
+                    </div>
                   </td>
                 </tr>
               ))}
@@ -175,6 +199,12 @@ export function KnowledgeBasePage() {
           </table>
         )}
       </div>
+
+      <DeleteSourceDialog
+        document={deleteDoc}
+        onOpenChange={(open) => !open && setDeleteDoc(null)}
+        onDeleted={() => void refresh()}
+      />
 
       <DocumentReviewDialog
         open={reviewDocId !== null}

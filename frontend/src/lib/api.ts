@@ -6,7 +6,12 @@ import type {
   ClassDef,
   ClassifyEntitiesResponse,
   CommitResult,
+  DeleteDocumentResult,
   Document,
+  DuplicateDecision,
+  DuplicateItem,
+  LlmStatus,
+  RemovalPreview,
   Entity,
   EntityCreateInput,
   ExplainResponse,
@@ -49,8 +54,11 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     // become an error state. 60s (not something shorter) because several
     // callers through this same helper (ingestText, explainScope,
     // suggestBatchEntity) make real LLM calls with a large injected-
-    // ontology system prompt and can legitimately take a while.
-    signal: init?.signal ?? AbortSignal.timeout(60000),
+    // ontology system prompt and can legitimately take a while - and a
+    // self-hosted small model (Ollama) on CPU can take minutes. Long-running
+    // extraction goes through the background-job endpoints (ingestTextAsync,
+    // document upload) and is polled instead; this ceiling is for the rest.
+    signal: init?.signal ?? AbortSignal.timeout(300000),
   })
   if (res.status === 401 && authHeaders().authorization) notifyAuthExpired()
   if (!res.ok) {
@@ -196,6 +204,11 @@ export const api = {
       body: JSON.stringify({ parent_key: parentKey }),
     }),
   getLinkDefs: () => request<LinkDef[]>('/schema/links'),
+  /** entity_id -> name for the given ids (unknown ids are absent). */
+  getEntityLabels: (ids: string[]) =>
+    request<Record<string, string>>(
+      `/entities/labels?${ids.map((id) => `ids=${encodeURIComponent(id)}`).join('&')}`,
+    ),
   getEntity: (id: string) => request<Entity>(`/entities/${encodeURIComponent(id)}`),
   searchEntities: (q: string) =>
     request<Entity[]>(`/entities/search?q=${encodeURIComponent(q)}`),
@@ -225,6 +238,24 @@ export const api = {
     request<IngestBatch>('/ingest', { method: 'POST', body: JSON.stringify({ text }) }),
   commitBatch: (batchId: string) =>
     request<CommitResult>(`/ingest/${encodeURIComponent(batchId)}/commit`, { method: 'POST' }),
+  /** Starts extraction in the background (status 'processing'); poll getBatch. */
+  ingestTextAsync: (text: string) =>
+    request<IngestBatch>('/ingest/async', { method: 'POST', body: JSON.stringify({ text }) }),
+  getDuplicates: (batchId: string) =>
+    request<{ duplicates: DuplicateItem[] }>(`/ingest/${encodeURIComponent(batchId)}/duplicates`),
+  resolveDuplicates: (batchId: string, decisions: DuplicateDecision[]) =>
+    request<IngestBatch>(`/ingest/${encodeURIComponent(batchId)}/duplicates/resolve`, {
+      method: 'POST',
+      body: JSON.stringify({ decisions }),
+    }),
+  getRemovalPreview: (documentId: string) =>
+    request<RemovalPreview>(`/documents/${encodeURIComponent(documentId)}/removal-preview`),
+  deleteDocument: (documentId: string, removeData: boolean) =>
+    request<DeleteDocumentResult>(
+      `/documents/${encodeURIComponent(documentId)}?remove_data=${removeData}`,
+      { method: 'DELETE' },
+    ),
+  getLlmStatus: () => request<LlmStatus>('/llm/status', { signal: AbortSignal.timeout(8000) }),
   getBatch: (batchId: string) => request<IngestBatch>(`/ingest/${encodeURIComponent(batchId)}`),
   suggestBatchEntity: (batchId: string, label: string, entityClass: string, aliases: string[]) => {
     const params = new URLSearchParams({ label, entity_class: entityClass })

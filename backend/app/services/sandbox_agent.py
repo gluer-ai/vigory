@@ -20,6 +20,7 @@ from fastapi import HTTPException
 from neo4j import AsyncSession
 from pydantic import BaseModel, Field, ValidationError
 
+from app.llm.activity import llm_operation
 from app.llm.client import complete_json
 from app.models.sandbox import SandboxBase, SandboxEdge, SandboxNode
 from app.ontology.validate import _split_class_list
@@ -502,7 +503,8 @@ async def run_chat(
             f"CONVERSATION (oldest first):\n{convo}\n\nUSER REQUEST: {message}{extra}"
         )
 
-    raw = await complete_json(system, user_prompt(nodes, edges))
+    with llm_operation("Sandbox assistant"):
+        raw = await complete_json(system, user_prompt(nodes, edges))
     ops, results = parse_ops(raw.get("ops"))
     cur_nodes, cur_edges, applied = await apply_ops(session, nodes, edges, ops, container, classes, links)
     results += applied
@@ -519,7 +521,8 @@ async def run_chat(
             "and explain briefly."
         )
         try:
-            raw2 = await complete_json(system, user_prompt(cur_nodes, cur_edges, note))
+            with llm_operation("Sandbox assistant: correcting failed changes"):
+                raw2 = await complete_json(system, user_prompt(cur_nodes, cur_edges, note))
             ops2, bad2 = parse_ops(raw2.get("ops"))
             cur_nodes, cur_edges, applied2 = await apply_ops(session, cur_nodes, cur_edges, ops2, container, classes, links)
             if ops2 or bad2:

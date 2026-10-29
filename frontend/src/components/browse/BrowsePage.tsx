@@ -2,6 +2,7 @@ import * as Tabs from '@radix-ui/react-tabs'
 import { useEffect, useState } from 'react'
 import { api, ApiError } from '../../lib/api'
 import { classMeta } from '../../lib/entityClass'
+import { useEntityLabels } from '../../lib/entityLabels'
 import type { Entity, Link } from '../../lib/types'
 import { Button } from '../ui/Button'
 import { ConfidenceChip, StatusChip } from '../ui/Chip'
@@ -104,10 +105,7 @@ function EntitiesTab({ onSelectEntity }: { onSelectEntity: (id: string) => void 
                     className="flex items-center gap-2 text-start text-[var(--color-text-primary)] hover:underline"
                   >
                     <Icon size={14} style={{ color: `var(${colorVar})` }} aria-hidden="true" />
-                    {e.label}
-                    <span className="font-mono text-xs text-[var(--color-text-muted)]">
-                      {e.entity_id}
-                    </span>
+                    <span title={e.entity_id}>{e.label}</span>
                   </button>
                 </td>
                 <td className="py-2 pe-3 font-mono text-xs text-[var(--color-text-muted)]">
@@ -140,6 +138,7 @@ function LinksTab({ onSelectEntity }: { onSelectEntity: (id: string) => void }) 
   const [offset, setOffset] = useState(0)
   const [status, setStatus] = useState<'loading' | 'error' | 'ready'>('loading')
   const [errorMessage, setErrorMessage] = useState('')
+  const nameOf = useEntityLabels(links.flatMap((l) => [l.source_entity, l.target_entity]))
 
   useEffect(() => {
     setStatus('loading')
@@ -184,18 +183,20 @@ function LinksTab({ onSelectEntity }: { onSelectEntity: (id: string) => void }) 
                 <button
                   type="button"
                   onClick={() => onSelectEntity(l.source_entity)}
-                  className="font-mono text-xs text-[var(--color-text-primary)] hover:underline"
+                  title={l.source_entity}
+                  className="text-[var(--color-text-primary)] hover:underline"
                 >
-                  {l.source_entity}
+                  {nameOf(l.source_entity)}
                 </button>
               </td>
               <td className="py-2 pe-3">
                 <button
                   type="button"
                   onClick={() => onSelectEntity(l.target_entity)}
-                  className="font-mono text-xs text-[var(--color-text-primary)] hover:underline"
+                  title={l.target_entity}
+                  className="text-[var(--color-text-primary)] hover:underline"
                 >
-                  {l.target_entity}
+                  {nameOf(l.target_entity)}
                 </button>
               </td>
               <td className="py-2 pe-3 text-xs text-[var(--color-text-muted)]">

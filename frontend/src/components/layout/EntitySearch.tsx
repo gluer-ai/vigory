@@ -1,7 +1,7 @@
 import { Search } from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
 import { api } from '../../lib/api'
-import { classMeta } from '../../lib/entityClass'
+import { classMeta, subclassName } from '../../lib/entityClass'
 import type { Entity } from '../../lib/types'
 
 interface EntitySearchProps {
@@ -102,8 +102,8 @@ export function EntitySearch({ onSelect }: EntitySearchProps) {
                   >
                     <Icon size={14} style={{ color: `var(${colorVar})` }} aria-hidden="true" />
                     <span className="truncate">{entity.label}</span>
-                    <span className="ms-auto shrink-0 font-mono text-xs text-[var(--color-text-muted)]">
-                      {entity.entity_id}
+                    <span className="ms-auto shrink-0 text-xs text-[var(--color-text-muted)]">
+                      {subclassName(entity.entity_subclass)}
                     </span>
                   </button>
                 </li>

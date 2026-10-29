@@ -2,6 +2,7 @@
 (services/scoping.py). It can only annotate or drop candidates the graph
 already returned — never add new nodes/edges, so it can't hallucinate scope.
 """
+from app.llm.activity import llm_operation
 from app.llm.client import complete_json
 
 SYSTEM_PROMPT = """You are an intelligence analyst assistant. You are given a scoped \
@@ -22,7 +23,8 @@ async def explain_scope(trigger_entity_id: str, subgraph: dict) -> dict:
         f"nodes: {[{'entity_id': n['entity_id'], 'label': n['label'], 'entity_class': n['entity_class']} for n in subgraph['nodes']]}\n"
         f"edges: {[{'source': e['source_entity'], 'target': e['target_entity'], 'link_type': e['link_type']} for e in subgraph['edges']]}"
     )
-    raw = await complete_json(SYSTEM_PROMPT, user_prompt)
+    with llm_operation("Explaining the scenario scope"):
+        raw = await complete_json(SYSTEM_PROMPT, user_prompt)
 
     annotations = [
         a

@@ -14,6 +14,24 @@ class Settings(BaseSettings):
 
     llm_provider: str = "openai"
     llm_model: str = "gpt-4o"
+    # Self-hosted models (Ollama): LLM_PROVIDER=ollama, LLM_MODEL=ollama_chat/qwen3:8b,
+    # LLM_API_BASE=http://ollama.railway.internal:11434. Empty = provider default.
+    llm_api_base: str = ""
+    # Small models on CPU are slow; a call may legitimately run for minutes.
+    llm_timeout_seconds: int = 600
+    # Optional small model for SHORT, constrained jobs only (duplicate-entity
+    # check, picking a class from a list). Full extraction and ontology growth
+    # keep using llm_model. Empty light_llm_model = disabled. If a light call
+    # fails, times out or returns bad JSON, the main model answers instead.
+    # e.g. LIGHT_LLM_MODEL=ollama_chat/qwen3:4b
+    #      LIGHT_LLM_API_BASE=http://ollama.railway.internal:11434
+    light_llm_model: str = ""
+    light_llm_api_base: str = ""
+    light_llm_timeout_seconds: int = 90
+    light_llm_max_tokens: int = 800
+    # Qwen3 "thinks" before answering by default, which multiplies latency for
+    # JSON extraction. True appends /no_think to the system prompt for qwen3 models.
+    llm_disable_thinking: bool = True
     openai_api_key: str = ""
     anthropic_api_key: str = ""
 
